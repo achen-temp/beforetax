@@ -1,0 +1,178 @@
+.illustration {
+  --shield-blue-light: #6e8cfb;
+  --shield-blue-dark: #3b5fe0;
+  --bg-top: #f5f8ff;
+  --bg-bottom: #e8edfb;
+  --icon-blue: #5b7de8;
+
+  position: relative;
+  width: 100%;
+  max-width: 300px;
+  aspect-ratio: 1 / 1;
+  margin-inline: auto;
+  border-radius: 20px;
+  background: linear-gradient(160deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  box-shadow:
+    0 20px 40px -12px rgba(59, 95, 224, 0.18),
+    0 8px 16px -8px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+}
+
+/* Dashed orbit arcs */
+.orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  border-radius: 50%;
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, 0.55);
+  pointer-events: none;
+}
+
+.orbitOuter {
+  width: 88%;
+  height: 42%;
+  border-width: 1.5px;
+}
+
+.orbitInner {
+  width: 72%;
+  height: 34%;
+  border-width: 1px;
+  border-color: rgba(203, 213, 225, 0.7);
+}
+
+/* Center stage */
+.center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -46%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 2;
+}
+
+.pedestal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: -6px;
+  z-index: 1;
+}
+
+.pedestalTop {
+  width: 88px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at 50% 40%,
+    #f8faff 0%,
+    #e4eaf6 45%,
+    #cdd6ea 100%
+  );
+  box-shadow:
+    0 4px 10px rgba(59, 95, 224, 0.12),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.pedestalBase {
+  width: 112px;
+  height: 18px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at 50% 35%,
+    #eef2fa 0%,
+    #d8e0f0 50%,
+    #b8c4de 100%
+  );
+  box-shadow:
+    0 6px 14px rgba(59, 95, 224, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+/* Shield — SVG 3D style */
+.shield {
+  position: relative;
+  display: flex;
+  width: 88px;
+  height: 108px;
+  margin-bottom: -12px;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  filter: drop-shadow(0 12px 20px rgba(37, 72, 180, 0.45));
+}
+
+.shieldSvg {
+  width: 100%;
+  height: 100%;
+}
+
+.shieldLockIcon {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 36px;
+  height: 36px;
+  translate: -50% -50%;
+  color: #fff;
+}
+
+/* Satellite icons */
+.satellite {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow:
+    0 6px 14px rgba(15, 23, 42, 0.08),
+    0 2px 4px rgba(59, 95, 224, 0.06);
+  z-index: 4;
+}
+
+.satellite svg {
+  width: 20px;
+  height: 20px;
+  stroke: var(--icon-blue);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.satelliteTl {
+  left: 10%;
+  top: 22%;
+}
+
+.satelliteTr {
+  right: 10%;
+  top: 22%;
+}
+
+.satelliteBl {
+  left: 8%;
+  bottom: 24%;
+}
+
+.satelliteBr {
+  right: 8%;
+  bottom: 24%;
+}
+
+@media (min-width: 1024px) {
+  .illustration {
+    max-width: 280px;
+  }
+}

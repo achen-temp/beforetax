@@ -1,0 +1,280 @@
+---
+description: Feature module specs and implementation patterns. Apply when building any of the core features (OTP, email monitoring, AI extraction, CPA review, export).
+globs: ["app/(cpa)/**", "app/(client)/**", "lib/claude/**", "lib/email/**"]
+alwaysApply: false
+---
+
+# Feature Modules
+
+## 4.1 — OTP & Secure Access
+
+### Flow
+```
+CPA adds client email
+  → system creates client record
+  → system starts email monitoring for this email
+  → system generates 6-digit OTP
+  → OTP sent via Resend
+  → client clicks link: /portal?token=xxx
+  → system verifies OTP → issues 30-day JWT cookie
+  → client accesses portal
+```
+
+### OTP generation
+```typescript
+import crypto from 'crypto'
+import bcrypt from 'bcryptjs'
+
+export async function generateOTP(clientId: string) {
+  const otp = crypto.randomInt(100000, 999999).toString()
+  const hashed = await bcrypt.hash(otp, 10)
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+
+  await updateClientOTP(clientId, hashed, expiresAt)
+
+  return otp // send this via email, never store plain
+}
+```
+
+### Key rule
+> When CPA adds a client email → auto-trigger OTP send + auto-add to email monitoring list.
+> One action, two things happen. CPA does not configure these separately.
+
+---
+
+## 4.2 — Document Upload Portal
+
+### Client upload flow
+- react-dropzone for drag and drop
+- Validate file type and size client-side before upload
+- Get presigned URL from `/api/documents/upload`
+- Upload directly to Supabase Storage (not through server)
+- On success: create document record, trigger extraction
+
+### Checklist categories to track
+```typescript
+export const DOCUMENT_CATEGORIES = {
+  income: ['w2', '1099_nec', '1099_misc'],
+  investment: ['1099_div', '1099_int', 'k1'],
+  retirement: ['1099_r'],
+  mortgage: ['1098'],
+  other: ['other'],
+} as const
+```
+
+---
+
+## 4.2B — Email Monitoring
+
+### How it works
+```
+CPA connects Gmail or Outlook via OAuth
+  → system stores encrypted refresh token on cpa_firms
+  → background job polls inbox every 15 minutes
+  → for each email: check if sender is in clients table (same firm)
+  → if match: extract attachments → create document records → trigger extraction
+  → log to email_events table
+```
+
+### Gmail OAuth flow
+```typescript
+// lib/email/gmail.ts
+import { google } from 'googleapis'
+
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+)
+
+export function getAuthUrl() {
+  return oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['https://www.googleapis.com/auth/gmail.readonly'],
+    prompt: 'consent', // force refresh token
+  })
+}
+
+export async function getNewEmails(refreshToken: string, monitoredEmails: string[]) {
+  oauth2Client.setCredentials({ refresh_token: refreshToken })
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
+
+  // Build query to only fetch from monitored client emails
+  const fromQuery = monitoredEmails.map(e => `from:${e}`).join(' OR ')
+  const query = `(${fromQuery}) has:attachment newer_than:1d`
+
+  const { data } = await gmail.users.messages.list({
+    userId: 'me',
+    q: query,
+  })
+
+  return data.messages || []
+}
+```
+
+### Key rule
+> Client email list = client roster. When CPA adds a client with an email, that email is
+> automatically monitored. No separate configuration step needed.
+
+---
+
+## 4.3 — AI Document Extraction
+
+### Claude API call
+```typescript
+// lib/claude/extract.ts
+export async function extractDocument(
+  fileBase64: string,
+  mimeType: string,
+  fileType: string
+): Promise<ExtractionResult> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      system: `You are a tax document data extraction specialist.
+Extract all fields from this ${fileType} tax document.
+Return ONLY valid JSON with this structure:
+{
+  "document_type": "w2",
+  "tax_year": 2024,
+  "fields": {
+    "employer_name": { "value": "Acme Corp", "confidence": 0.99 },
+    "employer_ein": { "value": "12-3456789", "confidence": 0.95 },
+    "wages": { "value": 75000.00, "confidence": 0.99 },
+    "federal_tax_withheld": { "value": 12000.00, "confidence": 0.99 }
+  },
+  "notes": "Any anomalies or observations"
+}
+No explanation, no markdown, only JSON.`,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: mimeType, data: fileBase64 }
+          },
+          { type: 'text', text: 'Extract all tax fields from this document.' }
+        ]
+      }]
+    })
+  })
+
+  const data = await response.json()
+  const text = data.content[0].text
+  return JSON.parse(text)
+}
+```
+
+### Always run as background job
+```typescript
+// app/api/documents/[id]/extract/route.ts
+export async function POST(request: Request, { params }: { params: { id: string } }) {
+  // Update status to 'processing' immediately
+  await updateDocumentStatus(params.id, 'processing')
+
+  // Return immediately — client polls for status
+  return NextResponse.json({ status: 'processing' })
+}
+
+// The actual extraction runs via Vercel Background Function
+// app/api/documents/[id]/extract-background/route.ts
+export const maxDuration = 300 // 5 minutes
+export async function POST() { /* actual Claude API call */ }
+```
+
+---
+
+## 4.4 — CPA Review Dashboard
+
+### What to show
+- Documents grouped by tax category
+- Each field with source document name
+- Conflicts highlighted in amber/red
+- Missing document suggestions (vs prior year)
+- Items needing attention count in header
+
+### Conflict detection logic
+```typescript
+// After all documents for a tax year are extracted:
+// Group extracted fields by field name
+// If same field appears in 2+ documents with different values → create conflict
+
+export async function detectConflicts(taxYearId: string) {
+  const documents = await getExtractedDocuments(taxYearId)
+
+  const fieldMap: Record<string, Array<{ documentId: string; value: unknown; fileName: string }>> = {}
+
+  for (const doc of documents) {
+    for (const [fieldName, fieldData] of Object.entries(doc.extracted_data.fields || {})) {
+      if (!fieldMap[fieldName]) fieldMap[fieldName] = []
+      fieldMap[fieldName].push({
+        documentId: doc.id,
+        value: fieldData.value,
+        fileName: doc.file_name,
+      })
+    }
+  }
+
+  // Find conflicts
+  for (const [fieldName, values] of Object.entries(fieldMap)) {
+    const uniqueValues = new Set(values.map(v => JSON.stringify(v.value)))
+    if (uniqueValues.size > 1) {
+      await createConflict(taxYearId, fieldName, values)
+    }
+  }
+}
+```
+
+---
+
+## 4.5 — Tax Model
+
+### What to show
+- Aggregated totals per category (total wages, total interest income, etc.)
+- Composition breakdown: "Total wages: $120,000 = W2 (Acme: $75,000) + W2 (Beta Corp: $45,000)"
+- Note: this is a display/summary view only
+- CSV export maps these fields to standard output format
+- Do NOT promise direct import to ProConnect or other tax software
+
+---
+
+## 4.6 — Data Export
+
+```typescript
+// lib/export/csv.ts
+export async function generateCSV(taxYearId: string): Promise<string> {
+  const taxYear = await getTaxYearWithDocuments(taxYearId)
+
+  const rows = [
+    ['Field', 'Value', 'Source Document', 'Confidence'],
+    // flatten all extracted fields into rows
+    ...flattenFields(taxYear.documents)
+  ]
+
+  return rows.map(row => row.map(cell =>
+    `"${String(cell).replace(/"/g, '""')}"`
+  ).join(',')).join('\n')
+}
+```
+
+---
+
+## Missing documents suggestion logic
+
+```typescript
+// Compare current year documents with prior year
+// If client had a document type last year but not this year → suggest it
+
+export async function getMissingDocumentSuggestions(
+  clientId: string,
+  currentYear: number
+): Promise<string[]> {
+  const priorYearDocs = await getDocumentTypes(clientId, currentYear - 1)
+  const currentYearDocs = await getDocumentTypes(clientId, currentYear)
+
+  return priorYearDocs.filter(type => !currentYearDocs.includes(type))
+}
+```

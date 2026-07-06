@@ -1,0 +1,34 @@
+---
+description: Supabase migration workflow — remind to push schema changes after editing migration files.
+globs: ["supabase/migrations/**", "supabase/**/*.sql"]
+alwaysApply: false
+---
+
+# Supabase Migrations
+
+## Source of truth
+- All schema changes MUST be new numbered files in `supabase/migrations/` (e.g. `003_add_notes.sql`)
+- Never apply schema changes only in Supabase Dashboard without a matching migration file
+- Migration files are committed to git — they are the blueprint for new environments
+
+## After creating or editing a migration
+Always remind the user at the end of your response:
+
+1. Run `npm run db:push` to apply pending migrations to the linked Supabase project
+2. Run `npm run db:status` if unsure which migrations are applied locally vs remote
+
+## If push fails with "already exists"
+The object exists in the DB but migration history is missing (usually from manual SQL Editor runs). Fix with:
+
+```bash
+supabase migration repair <version> --status applied --linked
+npm run db:push
+```
+
+Do NOT re-run SQL that creates objects already in the database.
+
+## New migration checklist
+- [ ] File named `NNN_descriptive_name.sql` (sequential number)
+- [ ] RLS enabled on any new table + `firm_id` column
+- [ ] Update `types/index.ts` if schema types changed
+- [ ] Remind user to `npm run db:push`

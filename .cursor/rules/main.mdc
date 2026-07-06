@@ -1,0 +1,74 @@
+---
+description: Project overview, tech stack, and general coding rules. Always apply.
+globs: ["**/*.ts", "**/*.tsx"]
+alwaysApply: true
+---
+
+# Tax Intake Platform — Core Rules
+
+## What this project is
+A multi-tenant SaaS platform for small CPA firms to automate tax document intake.
+CPAs manage clients, collect documents via portal or email, extract data with AI, export to CSV.
+
+**Stack:** Next.js 14 App Router + TypeScript + Supabase + Tailwind + shadcn/ui + Vercel
+
+## Project structure
+```
+app/
+  (auth)/          # CPA login/signup
+  (cpa)/           # CPA dashboard — protected routes
+  (client)/        # Client portal — OTP access
+  api/             # API routes
+components/
+  ui/              # shadcn/ui components
+  cpa/             # CPA-specific components
+  client/          # Client portal components
+lib/
+  supabase/        # All DB queries go here — never inline
+  claude/          # Claude API helpers
+  email/           # Resend + Gmail/Outlook helpers
+types/             # TypeScript types
+supabase/
+  migrations/      # SQL migrations
+```
+
+## TypeScript rules
+- Strict mode always on — zero `any` types
+- All shared types live in `/types/`
+- Validate all user input with `zod`
+
+## Component rules
+- Server components by default
+- `'use client'` only when you need interactivity (useState, useEffect, event handlers)
+- Never fetch data in client components — use server actions or pass as props
+
+```tsx
+// ✅ Server component (default)
+export default async function ClientsPage() {
+  const clients = await getClients(firmId)
+  return <ClientList clients={clients} />
+}
+
+// ✅ Client component (only for interactivity)
+'use client'
+export function ClientList({ clients }: { clients: Client[] }) {
+  const [selected, setSelected] = useState<string | null>(null)
+}
+```
+
+## Error handling
+- API routes return `{ error: string, code: string }` on failure
+- Never expose raw DB errors to frontend
+- Always show loading + error states in UI
+
+## Styling
+- Tailwind utility classes only
+- shadcn/ui for all UI components — never build from scratch what shadcn has
+- Mobile-responsive — minimum 375px width
+
+## What NOT to do
+- No `localStorage` or `sessionStorage` for sensitive data
+- No `SELECT *` — always specify columns
+- No hardcoded IDs or secrets
+- No `.env.local` committed to git
+- No inline Supabase queries in components — always use `/lib/supabase/` helpers

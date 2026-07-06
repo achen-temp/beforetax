@@ -1,0 +1,163 @@
+---
+description: Supabase database rules, query patterns, RLS, and schema reference. Apply when writing any database code, migrations, or Supabase queries.
+globs: ["lib/supabase/**", "supabase/**", "app/api/**"]
+alwaysApply: false
+---
+
+# Database Rules — Supabase
+
+## The one rule that overrides everything else
+> Every query MUST filter by `firm_id`. Every table MUST have RLS enabled.
+> Never return data across tenants. This is non-negotiable.
+
+## Supabase client setup
+
+```typescript
+// lib/supabase/server.ts — use in server components and API routes
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+
+export function createClient() {
+  const cookieStore = cookies()
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get: (name) => cookieStore.get(name)?.value } }
+  )
+}
+
+// lib/supabase/client.ts — use in client components only
+import { createBrowserClient } from '@supabase/ssr'
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+}
+```
+
+## Query pattern — always use helpers
+
+```typescript
+// ✅ Correct — query in lib/supabase/clients.ts
+export async function getClients(firmId: string) {
+  const supabase = createClient()
+  const { data, error } = await supabase
+    .from('clients')
+    .select('id, name, email, created_at, is_email_monitored')
+    .eq('firm_id', firmId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+// ❌ Wrong — never inline queries in components or API routes
+const { data } = await supabase.from('clients').select('*')
+```
+
+## Getting firm_id from session
+
+```typescript
+// Always derive firm_id from session — never trust user input
+export async function getFirmId(): Promise<string> {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Unauthorized')
+
+  const { data } = await supabase
+    .from('cpa_users')
+    .select('firm_id')
+    .eq('id', user.id)
+    .single()
+
+  if (!data) throw new Error('Firm not found')
+  return data.firm_id
+}
+```
+
+## Schema reference
+
+### cpa_firms
+```
+id, name, email, subdomain, branding (jsonb),
+gmail_refresh_token, outlook_refresh_token, created_at
+```
+
+### cpa_users
+```
+id (= auth uid), firm_id, email, role (owner|staff), created_at
+```
+
+### clients
+```
+id, firm_id, email, name, phone,
+is_email_monitored, otp_token (hashed), otp_expires_at,
+last_accessed_at, created_at
+```
+
+### tax_years
+```
+id, client_id, firm_id, year,
+status (collecting|processing|review|complete), created_at
+```
+
+### documents
+```
+id, tax_year_id, firm_id, client_id,
+file_name, file_path, file_size, mime_type,
+file_type (w2|1099_div|1099_int|1099_nec|1099_misc|1099_r|1098|k1|other),
+source (portal|email), email_message_id, email_subject,
+extraction_status (pending|processing|complete|failed),
+extracted_data (jsonb), raw_claude_response (jsonb),
+confidence_score (0.0-1.0), created_at
+```
+
+### conflicts
+```
+id, tax_year_id, firm_id, field_name,
+values (jsonb: [{document_id, value, file_name}]),
+resolved, resolved_by, resolved_at, created_at
+```
+
+### email_events
+```
+id, firm_id, client_id, message_id, subject,
+sender_email, received_at, attachments_found,
+processed, created_at
+```
+
+## RLS pattern for every new table
+
+```sql
+-- Always add both of these when creating a table
+ALTER TABLE your_table ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "firm_isolation" ON your_table
+  FOR ALL USING (
+    firm_id = (SELECT firm_id FROM cpa_users WHERE id = auth.uid())
+  );
+```
+
+## File storage paths
+
+```
+Format: /{firm_id}/{client_id}/{tax_year}/{filename}
+Example: /abc-123/def-456/2024/w2_employer.pdf
+```
+
+Never expose the full storage path to the client.
+Use signed URLs with short expiry for document downloads:
+
+```typescript
+const { data } = await supabase.storage
+  .from('documents')
+  .createSignedUrl(filePath, 60) // 60 seconds
+```
+
+## Checklist before every new query
+- [ ] Filtering by firm_id?
+- [ ] RLS enabled on the table?
+- [ ] Using specific column names (not SELECT *)?
+- [ ] firm_id derived from session, not user input?
+- [ ] Error handled with throw, not swallowed?

@@ -1,0 +1,160 @@
+---
+description: Security rules for API routes, authentication, file uploads, and sensitive data handling. Apply when writing API routes or auth-related code.
+globs: ["app/api/**", "middleware.ts", "lib/auth/**"]
+alwaysApply: false
+---
+
+# Security Rules
+
+## Every API route must follow this pattern
+
+```typescript
+// app/api/clients/route.ts
+import { createClient } from '@/lib/supabase/server'
+import { getFirmId } from '@/lib/supabase/auth'
+import { z } from 'zod'
+import { NextResponse } from 'next/server'
+
+export async function GET() {
+  try {
+    // 1. Verify session
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' }, { status: 401 })
+    }
+
+    // 2. Get firm_id from session (never from request)
+    const firmId = await getFirmId()
+
+    // 3. Query with firm isolation
+    const clients = await getClients(firmId)
+
+    return NextResponse.json({ clients })
+  } catch (error) {
+    // 4. Never expose raw errors
+    console.error('GET /api/clients error:', error)
+    return NextResponse.json({ error: 'Internal server error', code: 'SERVER_ERROR' }, { status: 500 })
+  }
+}
+```
+
+## Input validation with zod — always
+
+```typescript
+const CreateClientSchema = z.object({
+  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  phone: z.string().optional(),
+})
+
+export async function POST(request: Request) {
+  const body = await request.json()
+  const result = CreateClientSchema.safeParse(body)
+
+  if (!result.success) {
+    return NextResponse.json(
+      { error: 'Invalid input', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      { status: 400 }
+    )
+  }
+  // use result.data safely
+}
+```
+
+## Auth models
+
+### CPA Auth (Supabase Auth)
+```typescript
+// Middleware protects all (cpa) routes
+// Check session with: supabase.auth.getUser()
+// Never use getSession() for server-side auth checks — use getUser()
+```
+
+### Client Portal Auth (OTP)
+```typescript
+// Client gets a signed JWT after OTP verification
+// JWT contains: { clientId, firmId, exp }
+// Stored in httpOnly cookie
+// Verify with jose or jsonwebtoken on each request
+
+import { SignJWT, jwtVerify } from 'jose'
+
+const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+
+export async function createClientToken(clientId: string, firmId: string) {
+  return new SignJWT({ clientId, firmId })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('30d')
+    .sign(secret)
+}
+
+export async function verifyClientToken(token: string) {
+  const { payload } = await jwtVerify(token, secret)
+  return payload as { clientId: string; firmId: string }
+}
+```
+
+## OTP rules
+- Generate with `crypto.randomInt(100000, 999999)` — 6 digits
+- Hash before storing: `bcrypt.hash(otp.toString(), 10)`
+- Expire after 30 days
+- Single use — clear token after successful verification
+- Rate limit: max 3 OTP requests per email per hour
+
+## File upload rules
+```typescript
+const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic']
+const MAX_SIZE = 20 * 1024 * 1024 // 20MB
+
+export function validateFile(file: File) {
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    throw new Error('File type not allowed')
+  }
+  if (file.size > MAX_SIZE) {
+    throw new Error('File too large (max 20MB)')
+  }
+}
+
+// Storage path — always include firm_id
+const filePath = `${firmId}/${clientId}/${taxYear}/${crypto.randomUUID()}_${fileName}`
+```
+
+## Environment variables
+```typescript
+// ✅ Server-side only (never expose to client)
+process.env.ANTHROPIC_API_KEY
+process.env.SUPABASE_SERVICE_ROLE_KEY
+process.env.RESEND_API_KEY
+process.env.JWT_SECRET
+process.env.GOOGLE_CLIENT_SECRET
+process.env.MICROSOFT_CLIENT_SECRET
+
+// ✅ Safe to expose (NEXT_PUBLIC_ prefix)
+process.env.NEXT_PUBLIC_SUPABASE_URL
+process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+process.env.NEXT_PUBLIC_APP_URL
+```
+
+## Error response format — always consistent
+```typescript
+// Success
+{ data: T }
+
+// Error
+{ error: string, code: string, details?: unknown }
+
+// Common codes
+// AUTH_REQUIRED — not logged in
+// FORBIDDEN — logged in but wrong firm
+// NOT_FOUND — resource doesn't exist
+// VALIDATION_ERROR — bad input
+// SERVER_ERROR — unexpected error
+```
+
+## Never do this
+- Never log SSN, tax figures, or file contents to console
+- Never return full Supabase storage paths to client — use signed URLs
+- Never trust `firm_id` from request body — always derive from session
+- Never use `getSession()` server-side — use `getUser()` instead
+- Never store OAuth tokens in plain text — encrypt before storing
