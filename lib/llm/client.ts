@@ -1,4 +1,4 @@
-import { getLlmConfig } from '@/lib/llm/config'
+import { getLlmConfig, type LlmReasoningEffort } from '@/lib/llm/config'
 
 /**
  * Client for the OpenAI Responses API (/v1/responses) with optional strict
@@ -12,7 +12,8 @@ import { getLlmConfig } from '@/lib/llm/config'
  */
 
 export type InputTextPart = { type: 'input_text'; text: string }
-export type InputImagePart = { type: 'input_image'; image_url: string }
+export type ImageDetail = 'auto' | 'low' | 'high'
+export type InputImagePart = { type: 'input_image'; image_url: string; detail?: ImageDetail }
 /** A non-image document (e.g. PDF) sent inline as a data URL or by Files API id. */
 export type InputFilePart = {
   type: 'input_file'
@@ -38,6 +39,8 @@ export interface ResponsesOptions {
   messages: ResponsesMessage[]
   model?: string
   maxOutputTokens?: number | null
+  /** Overrides LLM_REASONING_EFFORT for this call (gpt-5 reasoning models). */
+  reasoningEffort?: LlmReasoningEffort | null
   /** When provided, the provider enforces this schema on the output. */
   jsonSchema?: JsonSchemaFormat
 }
@@ -51,10 +54,15 @@ export interface ResponsesResult {
 /** Thrown for transport/provider errors so callers can mark extraction failed. */
 export class LlmError extends Error {
   status?: number
-  constructor(message: string, status?: number) {
+  /** True when a retry could plausibly succeed (429, 5xx, timeout, network). */
+  retryable: boolean
+  /** Provider-suggested wait before retrying, from a Retry-After header (ms). */
+  retryAfterMs?: number
+  constructor(message: string, status?: number, retryable = false) {
     super(message)
     this.name = 'LlmError'
     this.status = status
+    this.retryable = retryable
   }
 }
 
@@ -62,13 +70,18 @@ export function textPart(text: string): InputTextPart {
   return { type: 'input_text', text }
 }
 
-export function imagePartFromUrl(url: string): InputImagePart {
-  return { type: 'input_image', image_url: url }
+export function imagePartFromUrl(url: string, detail: ImageDetail = 'high'): InputImagePart {
+  return { type: 'input_image', image_url: url, detail }
 }
 
-/** A base64/binary image as an inline data URL image part. */
-export function imagePartFromBase64(base64: string, mimeType: string): InputImagePart {
-  return { type: 'input_image', image_url: `data:${mimeType};base64,${base64}` }
+/** A base64/binary image as an inline data URL image part. Defaults to high
+ * detail so dense tax documents are tiled at full resolution (not downsampled). */
+export function imagePartFromBase64(
+  base64: string,
+  mimeType: string,
+  detail: ImageDetail = 'high'
+): InputImagePart {
+  return { type: 'input_image', image_url: `data:${mimeType};base64,${base64}`, detail }
 }
 
 /** A base64/binary file (e.g. PDF) as an inline data URL file part. */
@@ -90,6 +103,8 @@ export async function runResponse(opts: ResponsesOptions): Promise<ResponsesResu
   }
   const maxOut = opts.maxOutputTokens ?? config.maxOutputTokens
   if (maxOut) body.max_output_tokens = maxOut
+  const effort = opts.reasoningEffort ?? config.reasoningEffort
+  if (effort) body.reasoning = { effort }
   if (opts.jsonSchema) {
     body.text = {
       format: {
@@ -101,6 +116,29 @@ export async function runResponse(opts: ResponsesOptions): Promise<ResponsesResu
     }
   }
 
+  // Retry transient failures (provider busy / 5xx / timeout) with exponential
+  // backoff + jitter, honoring Retry-After when the provider sends it. This
+  // absorbs short "LLM too busy" spikes without failing the whole job; the
+  // queue's concurrency limit is what prevents us from causing them.
+  let lastError: LlmError = new LlmError('LLM request failed')
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    try {
+      return await runResponseOnce(config, body, opts)
+    } catch (e) {
+      const err = e instanceof LlmError ? e : new LlmError(e instanceof Error ? e.message : 'LLM request failed')
+      lastError = err
+      if (!err.retryable || attempt === config.maxRetries) throw err
+      await sleep(backoffMs(attempt, err.retryAfterMs))
+    }
+  }
+  throw lastError
+}
+
+async function runResponseOnce(
+  config: ReturnType<typeof getLlmConfig>,
+  body: Record<string, unknown>,
+  opts: ResponsesOptions
+): Promise<ResponsesResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
 
@@ -118,16 +156,24 @@ export async function runResponse(opts: ResponsesOptions): Promise<ResponsesResu
     })
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
+      // Timeout: NOT retried here — each attempt already waited the full timeout,
+      // and retrying would blow past the serverless function cap. The caller's
+      // medium-effort fallback (and the queue's job retry) handle timeouts.
       throw new LlmError(`LLM request timed out after ${config.timeoutMs}ms`)
     }
-    throw new LlmError(e instanceof Error ? e.message : 'LLM request failed')
+    // Network/transport error: retryable.
+    throw new LlmError(e instanceof Error ? e.message : 'LLM request failed', undefined, true)
   } finally {
     clearTimeout(timeout)
   }
 
   if (!response.ok) {
     const detail = await safeErrorBody(response)
-    throw new LlmError(`LLM provider returned ${response.status}: ${detail}`, response.status)
+    // 429 (rate limit) and 5xx (provider trouble) are worth retrying; other 4xx are not.
+    const retryable = response.status === 429 || response.status >= 500
+    const err = new LlmError(`LLM provider returned ${response.status}: ${detail}`, response.status, retryable)
+    err.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'))
+    throw err
   }
 
   const json = (await response.json()) as ResponsesApiResponse
@@ -143,6 +189,27 @@ export async function runResponse(opts: ResponsesOptions): Promise<ResponsesResu
   }
 
   return { text, model: json.model ?? (opts.model ?? config.model), usage: json.usage }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Exponential backoff (0.5s, 1s, 2s, 4s…) capped at 20s, with jitter. Honors an
+ * explicit Retry-After hint from the provider when it is larger. */
+function backoffMs(attempt: number, retryAfterMs?: number): number {
+  const base = Math.min(20_000, 500 * 2 ** attempt)
+  const jittered = base / 2 + Math.random() * (base / 2)
+  return Math.max(jittered, retryAfterMs ?? 0)
+}
+
+/** Parse a Retry-After header (seconds, or an HTTP date) into milliseconds. */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const date = Date.parse(value)
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined
 }
 
 /**

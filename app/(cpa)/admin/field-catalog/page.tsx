@@ -66,6 +66,11 @@ export default async function FieldCatalogPage() {
                           repeating
                         </span>
                       )}
+                      {field.slots && (
+                        <span className="ml-1 rounded bg-sky-50 px-1 text-[10px] text-sky-700">
+                          slots {field.slots.join('/')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-2 text-muted-foreground">{field.label}</td>
                     <td className="px-5 py-2 text-muted-foreground">{field.box ?? '—'}</td>

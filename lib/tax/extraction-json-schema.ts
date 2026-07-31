@@ -49,7 +49,31 @@ function valueSchemaFor(field: FieldDefinition): JsonSchema {
     }
   }
 
-  // Repeating simple (e.g. W-2 box 12): array of { code, value }.
+  // Fixed slots (e.g. W-2 box 12 lines a-d): an object keyed by slot, each a
+  // { code, value } pair. Every slot is required so the model must answer each
+  // physical line (null when blank) rather than silently truncating a list.
+  if (field.slots) {
+    const properties: Record<string, JsonSchema> = {}
+    for (const slot of field.slots) {
+      properties[slot] = {
+        type: 'object',
+        additionalProperties: false,
+        required: ['code', 'value'],
+        properties: {
+          code: { type: ['string', 'null'] },
+          value: { type: [jsonType(field.type as FieldDataType), 'null'] },
+        },
+      }
+    }
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: [...field.slots],
+      properties,
+    }
+  }
+
+  // Repeating simple (e.g. legacy code/value lists): array of { code, value }.
   if (field.repeating) {
     return {
       type: 'array',

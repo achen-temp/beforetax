@@ -1,5 +1,5 @@
 import type { DocumentType } from '@/lib/tax/document-types'
-import type { FieldDefinition } from '@/lib/tax/field-schemas'
+import type { FieldDefinition, FormSchema } from '@/lib/tax/field-schemas'
 import { getFormSchema, getSupportedFormTypes } from '@/lib/tax/field-schemas'
 
 /**
@@ -40,6 +40,12 @@ CORE PRINCIPLES
 FORM-TYPE SAFETY (critical)
 - You are told which form type to extract. First confirm the document actually IS that form.
 - If it is NOT that form type, set "form_type_mismatch": true, leave every field value null, and STOP. Do not force-extract fields from the wrong form.
+
+MULTIPLE COPIES & PAGES (critical for W-2 and similar forms)
+- A single wage/tax statement is usually printed as several copies (e.g. W-2 Copy B "Federal", Copy C, Copy 2 "State/City", Copy D) and may span multiple pages or repeat within one page. These copies are the SAME form for the SAME employee — NOT separate forms. Read ALL of them before answering.
+- Scalar money boxes (e.g. W-2 boxes 1-11) are identical on every copy. Report each once. NEVER add copies together or you will double- or triple-count.
+- State/local sections are frequently split across copies: the Federal copy often leaves state boxes 15-20 blank, while a separate State/City copy shows them — and when there are two states, each state commonly appears on its own copy. You MUST scan every copy/page and UNION all DISTINCT state and locality rows you find anywhere in the document.
+- Deduplicate reprints: if the exact same state/locality with the same amounts appears on multiple copies, include it only once. If a state appears on one copy and a different state on another, include BOTH.
 
 VALUE FORMATTING
 - Numbers: plain number, no currency symbols or thousands separators ("$1,234.56" -> 1234.56).
@@ -98,10 +104,15 @@ function renderFieldSpec(f: FieldDefinition): string {
     return `  • ${f.key} [group, REPEATING — one object per row (e.g. one per state/locality); return [] if none]: ${f.label}\n${subs}`
   }
   const box = f.box ? ` (box ${f.box})` : ''
+  const hint = f.hint ? ` [${f.hint}]` : ''
+  if (f.slots) {
+    const keys = f.slots.map((s) => `"${s}"`).join(', ')
+    return `  • ${f.key} [fixed slots]${box}: ${f.label}${hint} — return an object with a key for EACH physical line (${keys}), in order. Each slot is { "code": <printed code/label|null>, "value": <${f.type}|null> }. Fill empty lines with null for both; never omit a slot or shift entries.`
+  }
   const repeating = f.repeating
     ? ' — REPEATING: return an array of { "code": string, "value": number|null }'
     : ''
-  return `  • ${f.key} [${f.type}]${box}: ${f.label}${repeating}`
+  return `  • ${f.key} [${f.type}]${box}: ${f.label}${hint}${repeating}`
 }
 
 /** JSON value shape for a field in the output template. */
@@ -110,37 +121,23 @@ function renderShapeValue(f: FieldDefinition): string {
     const sub = f.fields.map((s) => `"${s.key}": <${s.type}|null>`).join(', ')
     return `{ "value": [ { ${sub} } ], "confidence": <0-1> }`
   }
+  if (f.slots) {
+    const slotShape = f.slots
+      .map((s) => `"${s}": { "code": <string|null>, "value": <${f.type}|null> }`)
+      .join(', ')
+    return `{ "value": { ${slotShape} }, "confidence": <0-1> }`
+  }
   if (f.repeating) {
     return `{ "value": [ { "code": <string>, "value": <number|null> } ], "confidence": <0-1> }`
   }
   return `{ "value": <${f.type}|null>, "confidence": <0-1> }`
 }
 
-/**
- * Per-form extraction user prompt. Field keys, labels, and types come from
- * FIELD_SCHEMAS so the output lines up 1:1 with document_fields rows. Box
- * numbers are attached server-side from the schema (deterministic), so the
- * model is NOT asked to return them.
- */
-export function buildExtractionUserPrompt(formType: DocumentType): string {
-  const schema = getFormSchema(formType)
-  if (!schema) {
-    throw new Error(`No field schema defined for form type: ${formType}`)
-  }
-
-  const fieldSpec = schema.fields.map(renderFieldSpec).join('\n')
-
-  const schemaShape = schema.fields
-    .map((f) => `    "${f.key}": ${renderShapeValue(f)}`)
-    .join(',\n')
-
-  return `Expected form type: ${schema.label} (${formType})
-
-Box numbers are shown only for your reference — do NOT return them.
-Extract these fields using the exact keys shown:
-${fieldSpec}
-
-Return exactly this JSON shape:
+/** The exact JSON envelope the model must return, generated from the schema so
+ * the enforced json_schema, the prompt, and the DB rows always agree. */
+function renderOutputTemplate(formType: DocumentType, schema: FieldDefinition[]): string {
+  const schemaShape = schema.map((f) => `    "${f.key}": ${renderShapeValue(f)}`).join(',\n')
+  return `Return exactly this JSON shape:
 {
   "form_type": "${formType}",
   "form_type_mismatch": <boolean>,
@@ -156,14 +153,91 @@ ${schemaShape}
   },
   "warnings": [ <zero or more of: ${EXTRACTION_WARNINGS.join(', ')}> ],
   "notes": <string|null>
+}`
 }
+
+/**
+ * Per-form extraction user prompt. Field keys, labels, and types come from
+ * FIELD_SCHEMAS so the output lines up 1:1 with document_fields rows. Box
+ * numbers are attached server-side from the schema (deterministic), so the
+ * model is NOT asked to return them. W-2 uses a dedicated, box-by-box prompt
+ * (buildW2UserPrompt); other forms use the generic schema-driven prompt.
+ */
+export function buildExtractionUserPrompt(formType: DocumentType): string {
+  const schema = getFormSchema(formType)
+  if (!schema) {
+    throw new Error(`No field schema defined for form type: ${formType}`)
+  }
+  if (formType === 'w2') return buildW2UserPrompt()
+  return buildGenericUserPrompt(formType, schema)
+}
+
+function buildGenericUserPrompt(formType: DocumentType, schema: FormSchema): string {
+  const fieldSpec = schema.fields.map(renderFieldSpec).join('\n')
+
+  const formNotes =
+    schema.notes && schema.notes.length > 0
+      ? `\nForm-specific guidance for ${schema.label} — follow carefully:\n${schema.notes
+          .map((n) => `- ${n}`)
+          .join('\n')}\n`
+      : ''
+
+  return `Expected form type: ${schema.label} (${formType})
+
+Box numbers are shown only for your reference — do NOT return them.
+Extract these fields using the exact keys shown:
+${fieldSpec}
+${formNotes}
+${renderOutputTemplate(formType, schema.fields)}
 
 Reminders:
 - If this is not a ${formType}, set form_type_mismatch true and leave field values null.
-- For group fields (e.g. state/local tax): return ONE object per printed row. If a W-2 reports NJ, NY and PA, return three separate objects — never merge states or concatenate their values. Return [] if the section is blank.
+- For group fields (e.g. state/local tax): return ONE object per distinct printed row. If a form reports NJ, NY and PA, return three separate objects — never merge states or concatenate their values. Return [] if the section is blank.
+- For fixed-slot fields: return an object with a key for EVERY slot ("a","b","c","d"), one per physical printed line and in order. Read each line independently; put null in both "code" and "value" for blank lines. Do NOT skip, merge, or shift lines, and never use the slot letter as the code.
+- Scan EVERY copy and page: this document may contain multiple copies of the same form. Money boxes repeat identically across copies (report once, never sum), while state/local rows are often split across different copies. Union all distinct state/local rows found anywhere, and drop exact duplicate reprints.
 - document_identity is used to link corrected/duplicate versions of the same form; fill last-4 only for TIN and account number, never full numbers.
 - printed_tax_year: only the year explicitly printed on the form; never infer from dates. Use null if absent.
 - Values must be printed on the document; use null when absent; never calculate or infer.`
+}
+
+/**
+ * Dedicated Form W-2 extraction prompt. W-2s are dense, printed as several
+ * copies, and split their state/local rows across copies, so they get a
+ * box-by-box walkthrough instead of the generic field list. The exact output
+ * keys and JSON envelope are still generated from FIELD_SCHEMAS so this prompt
+ * can never drift from the json_schema / flatten layer.
+ */
+function buildW2UserPrompt(): string {
+  const schema = getFormSchema('w2')!
+  const fieldSpec = schema.fields.map(renderFieldSpec).join('\n')
+
+  return `Expected form type: ${schema.label} (w2)
+
+You are a W-2 specialist. Read this Form W-2 box by box and transcribe EXACTLY what is printed. Confirm it is a W-2 first; if it is any other form, set "form_type_mismatch": true, leave all fields null, and stop.
+
+HOW W-2 COPIES WORK (read this before extracting)
+- One W-2 is printed as several copies: Copy B "Federal", Copy C, Copy 2 "State/City", Copy D. They may be stacked on one page or spread across pages. Every copy is the SAME employee — never treat a copy as a second W-2.
+- Boxes 1-14 (wages, taxes, box 12/13/14) are IDENTICAL on every copy. Read them once from the clearest copy. NEVER add copies together.
+- Boxes 15-20 (state/local) are frequently DIFFERENT per copy: the Federal copy often leaves them blank, and when there are two states each state usually appears on its own copy. You MUST scan every copy and UNION all distinct state and local rows.
+
+BOX-BY-BOX GUIDE (return every key below; use null for any box that is blank)
+- Identity: employer_name (box c), employer_ein (box b). document_identity.recipient_* comes from the employee side (box e/f), last 4 of SSN only.
+- Wages & taxes: wages (box 1), federal_tax_withheld (2), social_security_wages (3), social_security_tax_withheld (4), medicare_wages (5), medicare_tax_withheld (6), social_security_tips (7), allocated_tips (8), dependent_care_benefits (10), nonqualified_plans (11). Transcribe each amount digit-for-digit including the decimal; re-read once to guard against transposed digits (e.g. 137,264.26 vs 137,246.26).
+- Box 12 (box12): exactly four physical lines 12a/12b/12c/12d. Return an object with keys "a","b","c","d" in order. For each line put the printed IRS CODE (D, DD, W, C, AA, ...) in "code" and its amount in "value". The letters a-d are line POSITIONS, never the code. Blank line -> both null. Do not shift entries up to fill earlier slots.
+- Box 13 checkboxes: statutory_employee, retirement_plan, third_party_sick_pay — return "true" if the box is marked, else "false".
+- Box 14 (box14_other): up to four "Other" lines 14a-14d. Return an object with keys "a","b","c","d" in order; put the printed left-side label/description (e.g. SUI, SDI, NJVPDI) in "code" and the amount in "value". Blank line -> both null. Keep each line separate; never merge lines.
+- State rows (state_tax, boxes 15-17): one object PER STATE. Each state's state_wages (16) and state_tax_withheld (17) belong to that state's own line — read them from the same row as the state code, never reuse another state's amounts and never substitute box 1 for box 16. Union states found across all copies; drop exact duplicate reprints. If a copy prints "All states" as a placeholder AND a concrete state (NJ, PA) also appears, keep the concrete states.
+- Local rows (local_tax, boxes 18-20): one object per locality (local_wages 18, local_tax_withheld 19, locality_name 20).
+
+Exact output keys and shapes:
+${fieldSpec}
+
+${renderOutputTemplate('w2', schema.fields)}
+
+Reminders:
+- Return EVERY field key above, and for box12/box14 every slot "a"-"d"; a box that is blank on the form is null (not omitted).
+- Money boxes 1-14 are read ONCE and never summed across copies; state/local rows are UNIONED across copies.
+- Values must be printed on the document; use null when absent; never calculate, infer, or give tax advice.`
 }
 
 /**

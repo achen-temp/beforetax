@@ -15,6 +15,15 @@ export interface ExtractionContext {
   formType: DocumentType
 }
 
+export async function markExtractionQueued(documentId: string): Promise<void> {
+  const admin = createAdminClient()
+  const { error } = await admin
+    .from('documents')
+    .update({ extraction_status: 'queued' })
+    .eq('id', documentId)
+  if (error) throw new Error(`Failed to mark document queued: ${error.message}`)
+}
+
 export async function markExtractionProcessing(documentId: string): Promise<void> {
   const admin = createAdminClient()
   const { error } = await admin

@@ -74,9 +74,11 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 
 /**
  * Flatten a validated ExtractionResult into document_fields rows using the form
- * schema as the source of truth. Handles three field shapes:
+ * schema as the source of truth. Handles four field shapes:
  *   - simple:    one row (line_index 0)
- *   - repeating: box-12 style array of { code, value } -> one row per entry
+ *   - slots:     box-12/14 style object keyed by slot (a-d) -> one row per
+ *                non-blank slot (same row shape as repeating)
+ *   - repeating: array of { code, value } -> one row per entry
  *   - group:     per-state/locality array of objects -> one row per sub-field,
  *                entries sharing a line_index so a state's boxes stay grouped
  * Rows are only emitted for values actually present (null/blank is skipped).
@@ -91,6 +93,8 @@ export function flattenExtraction(result: ExtractionResult, schema: FormSchema):
 
     if (field.type === 'group' && field.fields) {
       flattenGroup(field, extracted.value, confidence, rows)
+    } else if (field.slots) {
+      flattenSlots(field, extracted.value, confidence, rows)
     } else if (field.repeating) {
       flattenRepeating(field, extracted.value, confidence, rows)
     } else {
@@ -142,6 +146,36 @@ function flattenRepeating(
       data_type: field.type as FieldDataType,
       ...typed,
       source_json_path: `fields.${field.key}.value[${i}]`,
+      confidence,
+    })
+  })
+}
+
+/** Fixed-slot field (e.g. box 12 lines a-d): value is an object keyed by slot,
+ * each a { code, value } pair. Emits one row per NON-BLANK slot, using the slot
+ * position as line_index (blank slots are simply skipped, so no empty rows). */
+function flattenSlots(
+  field: FieldDefinition,
+  value: unknown,
+  confidence: number | null,
+  rows: DocumentFieldInput[]
+): void {
+  const obj = asRecord(value)
+  if (!obj || !field.slots) return
+  field.slots.forEach((slot, i) => {
+    const slotObj = asRecord(obj[slot])
+    if (!slotObj) return
+    const typed = coerceValue(slotObj.value, field.type as FieldDataType)
+    if (!typed) return
+    const code = isBlank(slotObj.code) ? null : String(slotObj.code).trim()
+    rows.push({
+      box: field.box ?? null,
+      line_index: i,
+      code,
+      field_key: field.key,
+      data_type: field.type as FieldDataType,
+      ...typed,
+      source_json_path: `fields.${field.key}.value.${slot}`,
       confidence,
     })
   })

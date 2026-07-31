@@ -19,9 +19,24 @@ export function OtpInput({ value, onChange, disabled }: OtpInputProps) {
   }
 
   function handleChange(index: number, nextValue: string) {
-    const digit = nextValue.replace(/\D/g, '').slice(-1)
-    updateDigit(index, digit)
-    if (digit && index < 5) inputsRef.current[index + 1]?.focus()
+    const cleaned = nextValue.replace(/\D/g, '')
+
+    // Empty (deletion) or a single digit: update just this box.
+    if (cleaned.length <= 1) {
+      updateDigit(index, cleaned)
+      if (cleaned && index < 5) inputsRef.current[index + 1]?.focus()
+      return
+    }
+
+    // Multiple digits arriving at once (OTP autofill from SMS, or a paste that
+    // lands as input): spread them across boxes starting at the current one.
+    const chars = cleaned.slice(0, 6 - index).split('')
+    const arr = digits.map((d) => (d === ' ' ? '' : d))
+    chars.forEach((c, i) => {
+      arr[index + i] = c
+    })
+    onChange(arr.join('').replace(/\s/g, '').slice(0, 6))
+    inputsRef.current[Math.min(index + chars.length, 5)]?.focus()
   }
 
   function handleKeyDown(index: number, e: KeyboardEvent<HTMLInputElement>) {

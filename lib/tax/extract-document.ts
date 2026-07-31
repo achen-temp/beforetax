@@ -14,6 +14,8 @@ import {
   type InputPart,
   type ResponsesMessage,
 } from '@/lib/llm/client'
+import { getLlmConfig, type LlmReasoningEffort } from '@/lib/llm/config'
+import { extractOcrNumbers, extractStateCodes, ocrImages, type OcrImage } from '@/lib/tax/ocr'
 import { runExtraction, type ExtractionOutcome } from '@/lib/tax/run-extraction'
 import { markExtractionFailed, type ExtractionContext } from '@/lib/supabase/extraction'
 
@@ -31,6 +33,23 @@ export type DocumentInput =
 
 /** @deprecated use DocumentInput */
 export type DocumentImage = DocumentInput
+
+/** Deterministic signals derived from one OCR pass over the page images. */
+interface OcrSignals {
+  numbers: number[]
+  states: string[]
+}
+
+/** Pull base64 image inputs (the only OCR-able ones) for the Tesseract pass. */
+function imageInputs(inputs: DocumentInput[]): OcrImage[] {
+  const out: OcrImage[] = []
+  for (const input of inputs) {
+    if ('base64' in input && input.mimeType.startsWith('image/')) {
+      out.push({ base64: input.base64, mimeType: input.mimeType })
+    }
+  }
+  return out
+}
 
 function toInputPart(input: DocumentInput): InputPart {
   if ('text' in input) return textPart(input.text)
@@ -63,6 +82,7 @@ export async function extractDocumentFields(params: {
   formType: DocumentType
   inputs: DocumentInput[]
   model?: string
+  reasoningEffort?: LlmReasoningEffort
 }): Promise<string> {
   const messages: ResponsesMessage[] = [
     { role: 'system', content: [textPart(EXTRACTION_SYSTEM_PROMPT)] },
@@ -75,6 +95,9 @@ export async function extractDocumentFields(params: {
   const result = await runResponse({
     messages,
     model: params.model,
+    // Extraction accuracy (reading dense multi-copy forms, every state row, exact
+    // digits) benefits most from deliberate reasoning. Overridable via env.
+    reasoningEffort: params.reasoningEffort ?? 'high',
     jsonSchema: buildExtractionJsonSchema(params.formType),
   })
   return result.text
@@ -95,7 +118,8 @@ export async function classifyDocument(params: {
     },
   ]
 
-  const result = await runResponse({ messages, model: params.model })
+  // Classification is a simpler task (just the form type) — keep it fast/cheap.
+  const result = await runResponse({ messages, model: params.model, reasoningEffort: 'low' })
   return result.text
 }
 
@@ -110,17 +134,76 @@ export async function extractAndPersistDocument(params: {
   model?: string
 }): Promise<ExtractionOutcome> {
   let rawModelText: string
+  let verifyModelText: string | undefined
+  let ocrNumbers: number[] | undefined
+  let ocrStates: string[] | undefined
   try {
-    rawModelText = await extractDocumentFields({
-      formType: params.ctx.formType,
-      inputs: params.inputs,
-      model: params.model,
-    })
+    const config = getLlmConfig()
+    const runOnce = (reasoningEffort: LlmReasoningEffort = 'high') =>
+      extractDocumentFields({
+        formType: params.ctx.formType,
+        inputs: params.inputs,
+        model: params.model,
+        reasoningEffort,
+      })
+    const isTimeoutError = (err: unknown): err is Error =>
+      err instanceof Error && /timed out/i.test(err.message)
+
+    // Best-effort OCR over the page images, run alongside the LLM call(s) so it
+    // hides under their latency. Only image inputs are OCR-able. One recognition
+    // pass yields both the numeric cross-check and the state-coverage signal.
+    const emptyOcr: OcrSignals = { numbers: [], states: [] }
+    const ocrTask: Promise<OcrSignals> = config.ocrCrossCheck
+      ? ocrImages(imageInputs(params.inputs))
+          .then((text) => ({ numbers: extractOcrNumbers(text), states: extractStateCodes(text) }))
+          .catch(() => emptyOcr)
+      : Promise.resolve(emptyOcr)
+    const applyOcr = (ocr: OcrSignals): void => {
+      ocrNumbers = ocr.numbers.length > 0 ? ocr.numbers : undefined
+      ocrStates = ocr.states.length > 0 ? ocr.states : undefined
+    }
+
+    if (config.verifyExtraction) {
+      // Two independent passes in parallel: same wall-clock, double the tokens.
+      // reconcile-extraction cross-checks them (and OCR) to catch misreads.
+      try {
+        const [primary, verify, ocr] = await Promise.all([runOnce(), runOnce(), ocrTask])
+        rawModelText = primary
+        verifyModelText = verify
+        applyOcr(ocr)
+      } catch (err) {
+        if (!isTimeoutError(err)) throw err
+        // Keep the pipeline completing under heavy multi-copy inputs:
+        // downgrade to one medium-effort pass if dual high-effort timed out.
+        console.warn(
+          `[extract] dual-pass timed out for document ${params.ctx.documentId}; retrying single-pass`
+        )
+        rawModelText = await runOnce('medium')
+      }
+    } else {
+      // Default: one stable pass + deterministic OCR numeric/state cross-check.
+      try {
+        const [primary, ocr] = await Promise.all([runOnce('high'), ocrTask])
+        rawModelText = primary
+        applyOcr(ocr)
+      } catch (err) {
+        if (!isTimeoutError(err)) throw err
+        console.warn(
+          `[extract] single-pass high-effort timed out for document ${params.ctx.documentId}; retrying medium-effort`
+        )
+        const [primary, ocr] = await Promise.all([
+          runOnce('medium'),
+          ocrTask.catch(() => emptyOcr),
+        ])
+        rawModelText = primary
+        applyOcr(ocr)
+      }
+    }
   } catch (e) {
     const error = e instanceof Error ? e.message : 'LLM extraction request failed'
     await markExtractionFailed(params.ctx.documentId, error).catch(() => {})
     return { ok: false, error }
   }
 
-  return runExtraction({ ctx: params.ctx, rawModelText })
+  return runExtraction({ ctx: params.ctx, rawModelText, verifyModelText, ocrNumbers, ocrStates })
 }

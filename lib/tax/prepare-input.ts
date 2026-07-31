@@ -4,14 +4,25 @@ import type { DocumentInput } from '@/lib/tax/extract-document'
 /**
  * Normalizes any uploaded file into DocumentInput[] the model can consume,
  * following the hybrid strategy:
- *   - API-native (PDF, common images): passed through as-is
+ *   - PDF: rasterized to high-DPI PNG images, one per page (falls back to the
+ *     native PDF if rasterization fails). High-res images markedly improve
+ *     digit-level OCR accuracy on scanned tax forms vs. the API's default
+ *     internal PDF rasterization.
+ *   - Common images: passed through as-is
  *   - HEIC/TIFF: converted to JPEG (vision APIs don't accept them)
  *   - Word / Excel / CSV / HTML / RTF: text extracted upstream and sent as text
  *
- * Node-only (uses sharp/heic-convert/mammoth/xlsx) — call from a route with
- * `export const runtime = 'nodejs'`. Returns multiple inputs for multi-page
- * sources (e.g. multi-page TIFF -> one image per page).
+ * Node-only (uses pdf-to-img/sharp/heic-convert/mammoth/xlsx) — call from a
+ * route with `export const runtime = 'nodejs'`. Returns multiple inputs for
+ * multi-page sources (e.g. a multi-page PDF -> one image per page).
  */
+
+/** Rasterization DPI factor (72 DPI base). 3 ≈ 216 DPI — enough for dense W-2
+ * boxes without blowing up the request payload. */
+const PDF_RASTER_SCALE = 3
+
+/** Safety cap on pages rasterized from a single PDF (cost/payload guard). */
+const MAX_PDF_PAGES = 20
 
 export class UnsupportedFileTypeError extends Error {
   constructor(descriptor: string) {
@@ -94,8 +105,18 @@ export async function prepareDocumentInputs(file: RawFile): Promise<DocumentInpu
   const buffer = toBuffer(file.data)
 
   switch (kind) {
-    case 'pdf':
+    case 'pdf': {
+      try {
+        const images = await pdfToImages(buffer, file.filename)
+        if (images.length > 0) return images
+      } catch (err) {
+        console.warn(
+          `PDF rasterization failed for ${file.filename}; falling back to native PDF.`,
+          err
+        )
+      }
       return [{ base64: buffer.toString('base64'), mimeType: 'application/pdf', filename: file.filename }]
+    }
 
     case 'image_native':
       return [{ base64: buffer.toString('base64'), mimeType: file.mimeType, filename: file.filename }]
@@ -121,6 +142,25 @@ export async function prepareDocumentInputs(file: RawFile): Promise<DocumentInpu
     case 'rtf':
       return [asDocumentText(file.filename, rtfToText(buffer.toString('utf-8')))]
   }
+}
+
+/** Rasterize each PDF page to a high-DPI PNG image the vision model can read. */
+async function pdfToImages(buffer: Buffer, filename: string): Promise<DocumentInput[]> {
+  const { pdf } = await import('pdf-to-img')
+  const doc = await pdf(buffer, { scale: PDF_RASTER_SCALE })
+
+  const inputs: DocumentInput[] = []
+  let page = 0
+  for await (const image of doc) {
+    page++
+    inputs.push({
+      base64: Buffer.from(image).toString('base64'),
+      mimeType: 'image/png',
+      filename: `${filename}#p${page}.png`,
+    })
+    if (page >= MAX_PDF_PAGES) break
+  }
+  return inputs
 }
 
 async function heicToJpeg(buffer: Buffer, filename: string): Promise<DocumentInput> {

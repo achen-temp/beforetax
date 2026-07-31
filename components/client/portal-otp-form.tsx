@@ -24,10 +24,9 @@ export function PortalOtpForm() {
   const [resending, setResending] = useState(false)
 
   useEffect(() => {
-    if (!token) {
-      setError('Invalid portal link. Please use the link from your email.')
-      return
-    }
+    // No token means the client didn't arrive via their email link — a dedicated
+    // guidance screen is shown instead of the code form (see below).
+    if (!token) return
 
     fetch(`/api/portal?token=${token}`)
       .then(async (res) => {
@@ -137,6 +136,8 @@ export function PortalOtpForm() {
             </div>
           </div>
 
+          {token ? (
+            <>
           <div className="mb-8 space-y-2 text-center">
             <h2 className="text-2xl font-bold text-slate-900">Enter verification code</h2>
             <p className="text-sm text-slate-500">
@@ -152,7 +153,7 @@ export function PortalOtpForm() {
           </div>
 
           <form onSubmit={handleVerify} className="space-y-6">
-            <OtpInput value={otp} onChange={setOtp} disabled={loading || !token} />
+            <OtpInput value={otp} onChange={setOtp} disabled={loading} />
 
             {error && (
               <p className="text-center text-sm text-red-600" role="alert">
@@ -204,6 +205,25 @@ export function PortalOtpForm() {
               Try another way
             </Button>
           </form>
+            </>
+          ) : (
+            <div className="space-y-5 text-center">
+              <div className="space-y-2">
+                <h2 className="text-2xl font-bold text-slate-900">Check your email</h2>
+                <p className="text-sm text-slate-500">
+                  Open the secure link we emailed you to continue — it signs you in and then asks
+                  for your 6-digit code.
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-left text-sm text-slate-600">
+                Didn&apos;t receive it, or your link expired? Contact your CPA and they&apos;ll
+                resend your secure access link.
+              </div>
+              <Button asChild variant="outline" className="h-11 w-full rounded-xl border-slate-200">
+                <Link href="/">Back to home</Link>
+              </Button>
+            </div>
+          )}
 
               <div className="mt-8 flex items-center justify-center gap-2 text-xs text-slate-400">
                 <Lock className="size-3.5" />

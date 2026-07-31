@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useDropzone } from 'react-dropzone'
 import {
   Bell,
@@ -11,6 +12,7 @@ import {
   Clock,
   Copy,
   DollarSign,
+  FileSpreadsheet,
   FileText,
   HelpCircle,
   Home,
@@ -61,6 +63,8 @@ function statusLabel(status: string) {
   switch (status) {
     case 'complete':
       return { text: 'Detected', className: 'bg-emerald-50 text-emerald-700' }
+    case 'queued':
+      return { text: 'Queued', className: 'bg-slate-100 text-slate-600', spinning: true }
     case 'processing':
       return { text: 'Processing', className: 'bg-blue-50 text-blue-700', spinning: true }
     case 'failed':
@@ -68,6 +72,12 @@ function statusLabel(status: string) {
     default:
       return { text: 'Processing', className: 'bg-blue-50 text-blue-700', spinning: true }
   }
+}
+
+/** A document is still moving through the pipeline (waiting in the queue or
+ * being extracted) — used to decide when to poll for updates. */
+function isPending(status: string): boolean {
+  return status === 'queued' || status === 'processing'
 }
 
 const SECURITY_FEATURES = [
@@ -101,7 +111,7 @@ export function PortalUploadDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     const [sessionRes, docsRes] = await Promise.all([
       fetch('/api/portal/session'),
       fetch('/api/portal/documents'),
@@ -121,77 +131,106 @@ export function PortalUploadDashboard() {
       const data = await docsRes.json()
       setDocuments(data.documents ?? [])
     }
-  }
+  }, [router])
+
+  const enqueueAndRefresh = useCallback(
+    async (documentId: string) => {
+      // /process now only enqueues a background job and returns immediately (202).
+      // We refresh once to show the Queued state; the pending-poll effect tracks
+      // it through processing to complete. Transport errors are reconciled by the
+      // next loadData / tab focus.
+      try {
+        await fetch(`/api/portal/documents/${documentId}/process`, { method: 'POST' })
+      } catch {
+        // ignore — status is reconciled by loadData
+      }
+      await loadData()
+    },
+    [loadData]
+  )
+
+  const onDrop = useCallback(
+    async (files: File[]) => {
+      const file = files[0]
+      if (!file) return
+
+      setError(null)
+
+      try {
+        validateFile(file)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Invalid file')
+        return
+      }
+
+      setUploading(true)
+
+      try {
+        const res = await fetch('/api/portal/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type,
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error ?? 'Upload failed')
+
+        const uploadRes = await fetch(data.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type },
+          body: file,
+        })
+
+        if (!uploadRes.ok) throw new Error('Failed to upload file to storage')
+
+        await loadData()
+        // The upload is done; enqueue extraction (returns immediately) and refresh
+        // so the doc shows as Queued. The pending-poll effect then tracks it to
+        // completion, and the dropzone is free for the next file right away.
+        void enqueueAndRefresh(data.document.id)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Upload failed')
+      } finally {
+        setUploading(false)
+      }
+    },
+    [loadData, enqueueAndRefresh]
+  )
 
   useEffect(() => {
-    loadData()
-  }, [])
+    // Initial data fetch on mount; loadData sets state only after awaiting the
+    // network, so this is a legitimate load-on-mount (not a synchronous render loop).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadData()
 
-  const onDrop = useCallback(async (files: File[]) => {
-    const file = files[0]
-    if (!file) return
-
-    setError(null)
-
-    try {
-      validateFile(file)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Invalid file')
-      return
+    // Refresh when the client returns to the tab instead of polling on a timer.
+    // Covers documents that finished while the tab was backgrounded and files
+    // ingested elsewhere (e.g. by email). Event-driven, so it's idle otherwise.
+    function refreshOnFocus() {
+      if (!document.hidden) void loadData()
     }
-
-    setUploading(true)
-
-    try {
-      const res = await fetch('/api/portal/documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: file.name,
-          fileSize: file.size,
-          mimeType: file.type,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Upload failed')
-
-      const uploadRes = await fetch(data.uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type },
-        body: file,
-      })
-
-      if (!uploadRes.ok) throw new Error('Failed to upload file to storage')
-
-      await loadData()
-      // Kick off classification + extraction on the server; poll for live status.
-      void triggerProcessing(data.document.id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Upload failed')
-    } finally {
-      setUploading(false)
+    window.addEventListener('focus', refreshOnFocus)
+    document.addEventListener('visibilitychange', refreshOnFocus)
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus)
+      document.removeEventListener('visibilitychange', refreshOnFocus)
     }
-  }, [])
+  }, [loadData])
 
-  async function pollDocumentStatus(documentId: string, attempts = 20) {
-    for (let i = 0; i < attempts; i++) {
-      await new Promise((r) => setTimeout(r, 3000))
-      const res = await fetch('/api/portal/documents')
-      if (!res.ok) return
-      const data = await res.json()
-      const docs: DocumentRow[] = data.documents ?? []
-      setDocuments(docs)
-      const doc = docs.find((d) => d.id === documentId)
-      if (doc && (doc.extraction_status === 'complete' || doc.extraction_status === 'failed')) return
-    }
-  }
-
-  async function triggerProcessing(documentId: string) {
-    // Fire-and-forget: the request resolves when extraction finishes, but we
-    // poll independently so the status badge updates live in the meantime.
-    fetch(`/api/portal/documents/${documentId}/process`, { method: 'POST' }).catch(() => {})
-    await pollDocumentStatus(documentId)
-  }
+  // Extraction now runs in a background queue, so poll ONLY while at least one
+  // document is still queued/processing, and stop as soon as everything settles.
+  // (Idle the rest of the time — no fixed-interval polling.)
+  const hasPending = documents.some((d) => isPending(d.extraction_status))
+  useEffect(() => {
+    if (!hasPending) return
+    const timer = setInterval(() => {
+      if (!document.hidden) void loadData()
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [hasPending, loadData])
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
@@ -261,10 +300,17 @@ export function PortalUploadDashboard() {
                     <p className="truncate text-sm font-medium text-slate-900">{session?.name}</p>
                     <p className="truncate text-xs text-slate-500">{session?.email}</p>
                   </div>
+                  <Link
+                    href="/portal/tax-data"
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    <FileSpreadsheet className="size-4 text-slate-400" />
+                    Tax data
+                  </Link>
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                    className="w-full border-t border-slate-100 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                   >
                     Sign out
                   </button>

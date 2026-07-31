@@ -1,6 +1,7 @@
 import { getFormSchema } from '@/lib/tax/field-schemas'
 import { parseExtractionResult } from '@/lib/tax/extraction-result'
 import { flattenExtraction, meanFieldConfidence } from '@/lib/tax/flatten-extraction'
+import { applyOcrConfidence, applyStateCoverage, reconcileRows } from '@/lib/tax/reconcile-extraction'
 import {
   markExtractionFailed,
   persistExtraction,
@@ -20,12 +21,21 @@ export type ExtractionOutcome =
  * returned, so it can be reused for re-runs, replays, and tests. Any failure
  * marks the document `failed` (preserving the raw text) rather than throwing to
  * the caller, so a bad extraction never breaks the surrounding request.
+ *
+ * When `verifyModelText` (an independent second pass) is supplied and parses,
+ * the two passes are reconciled: agreeing fields are trusted, disagreements are
+ * flagged for review (see reconcile-extraction.ts). Optional `ocrNumbers` (from
+ * a Tesseract pass over the page) give an independent third signal on numeric
+ * fields. The persisted snapshot is always the primary read.
  */
 export async function runExtraction(params: {
   ctx: ExtractionContext
   rawModelText: string
+  verifyModelText?: string
+  ocrNumbers?: number[]
+  ocrStates?: string[]
 }): Promise<ExtractionOutcome> {
-  const { ctx, rawModelText } = params
+  const { ctx, rawModelText, verifyModelText, ocrNumbers, ocrStates } = params
 
   const schema = getFormSchema(ctx.formType)
   if (!schema) {
@@ -44,7 +54,35 @@ export async function runExtraction(params: {
 
   // On a form-type mismatch the model returns null fields by design; persist the
   // snapshot (so the UI can flag it) but write no rows.
-  const rows = result.form_type_mismatch ? [] : flattenExtraction(result, schema)
+  let rows = result.form_type_mismatch ? [] : flattenExtraction(result, schema)
+
+  // Cross-check against the verification pass when available. A failed/mismatched
+  // verify pass is ignored — we fall back to the single-pass OCR annotation.
+  let reconciled = false
+  if (rows.length > 0 && verifyModelText) {
+    const verifyParsed = parseExtractionResult(verifyModelText)
+    if (verifyParsed.ok && !verifyParsed.data.form_type_mismatch) {
+      const verifyRows = flattenExtraction(verifyParsed.data, schema)
+      rows = reconcileRows(rows, verifyRows, schema, ocrNumbers).rows
+      reconciled = true
+    }
+  }
+  // Default (single-pass) path: deterministic OCR annotations only — never
+  // changes values. Numeric cross-check flags likely misreads; state coverage
+  // dedupes repeated states and flags the section if OCR saw a state the model
+  // dropped. (Dual-pass reconcile has its own group merge/dedup, so this is
+  // scoped to the single-pass path.)
+  if (!reconciled && rows.length > 0) {
+    rows = applyOcrConfidence(rows, ocrNumbers)
+    const coverage = applyStateCoverage(rows, ocrStates)
+    rows = coverage.rows
+    if (coverage.missingStates.length > 0) {
+      console.warn(
+        `[extract] document ${ctx.documentId}: OCR saw state(s) ${coverage.missingStates.join(', ')} not returned by the model; state section flagged for review`
+      )
+    }
+  }
+
   const confidenceScore = meanFieldConfidence(result)
 
   try {

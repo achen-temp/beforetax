@@ -42,3 +42,8 @@ supabase/.temp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# tesseract.js OCR language data (runtime download cache; fetched from CDN and
+# cached to /tmp at runtime — not source)
+eng.traineddata
+*.traineddata
