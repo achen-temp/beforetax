@@ -57,3 +57,22 @@ export function validateFile(file: File) {
     throw new Error(`File too large (max ${MAX_FILE_SIZE_MB}MB).`)
   }
 }
+
+/** 64-char lowercase hex — the shape of a SHA-256 digest. Used to validate the
+ * client-supplied hash server-side before trusting it for dedup. */
+export const FILE_HASH_PATTERN = /^[a-f0-9]{64}$/
+
+/**
+ * Content hash of a file, computed in the browser via Web Crypto. We hash the
+ * bytes before requesting an upload URL so the server can reject an identical
+ * re-upload without ever seeing the file (bytes go straight to Storage). SHA-256
+ * makes a collision between two different files effectively impossible, so an
+ * equal hash means equal content. Requires a secure context (https/localhost).
+ */
+export async function sha256Hex(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}

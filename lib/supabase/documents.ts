@@ -61,6 +61,32 @@ export async function finalizeClassificationOnly(
   if (error) throw new Error(`Failed to finalize classification: ${error.message}`)
 }
 
+/** A prior upload of the same content within a tax year, or null. Excludes failed
+ * uploads so a retry isn't blocked by a dead row. */
+export async function findDocumentByHash(taxYearId: string, fileHash: string) {
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from('documents')
+    .select('id, file_name, created_at')
+    .eq('tax_year_id', taxYearId)
+    .eq('file_hash', fileHash)
+    .neq('extraction_status', 'failed')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+/** Thrown when the unique content-hash index rejects a concurrent duplicate insert. */
+export class DuplicateDocumentError extends Error {
+  constructor() {
+    super('DUPLICATE_DOCUMENT')
+    this.name = 'DuplicateDocumentError'
+  }
+}
+
 export async function createDocumentRecord(input: {
   taxYearId: string
   firmId: string
@@ -69,6 +95,7 @@ export async function createDocumentRecord(input: {
   filePath: string
   fileSize: number
   mimeType: string
+  fileHash?: string
 }) {
   const admin = createAdminClient()
   const { data, error } = await admin
@@ -81,12 +108,16 @@ export async function createDocumentRecord(input: {
       file_path: input.filePath,
       file_size: input.fileSize,
       mime_type: input.mimeType,
+      file_hash: input.fileHash ?? null,
       source: 'portal',
       extraction_status: 'pending',
     })
     .select('id, file_name, created_at')
     .single()
 
+  // 23505 = unique_violation on uq_documents_hash: a concurrent request inserted
+  // the same content first. Surface a typed error so the route can 409.
+  if (error?.code === '23505') throw new DuplicateDocumentError()
   if (error || !data) throw new Error(error?.message ?? 'Failed to create document')
   return data
 }

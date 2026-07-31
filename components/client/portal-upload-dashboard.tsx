@@ -30,6 +30,7 @@ import {
   MAX_FILE_SIZE_MB,
   RECOMMENDED_FORMATS_LABEL,
   SUPPORTED_FORMATS_LABEL,
+  sha256Hex,
   validateFile,
 } from '@/lib/files'
 
@@ -166,6 +167,10 @@ export function PortalUploadDashboard() {
       setUploading(true)
 
       try {
+        // Hash the bytes before asking for an upload URL so the server can reject
+        // an identical re-upload without receiving the file.
+        const fileHash = await sha256Hex(file)
+
         const res = await fetch('/api/portal/documents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -173,9 +178,17 @@ export function PortalUploadDashboard() {
             fileName: file.name,
             fileSize: file.size,
             mimeType: file.type,
+            fileHash,
           }),
         })
         const data = await res.json()
+        // Duplicate content: surface the notice and refresh so the existing doc
+        // is visible; not a hard failure.
+        if (res.status === 409 && data.code === 'DUPLICATE') {
+          setError(data.error ?? 'You already uploaded this file.')
+          await loadData()
+          return
+        }
         if (!res.ok) throw new Error(data.error ?? 'Upload failed')
 
         const uploadRes = await fetch(data.uploadUrl, {

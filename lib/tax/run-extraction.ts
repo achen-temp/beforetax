@@ -1,7 +1,14 @@
+import type { DocumentType } from '@/lib/tax/document-types'
 import { getFormSchema } from '@/lib/tax/field-schemas'
 import { parseExtractionResult } from '@/lib/tax/extraction-result'
 import { flattenExtraction, meanFieldConfidence } from '@/lib/tax/flatten-extraction'
-import { applyOcrConfidence, applyStateCoverage, reconcileRows } from '@/lib/tax/reconcile-extraction'
+import {
+  applyBox12CodeValidation,
+  applyOcrConfidence,
+  applyStateCoverage,
+  applyW2ArithmeticChecks,
+  reconcileRows,
+} from '@/lib/tax/reconcile-extraction'
 import {
   markExtractionFailed,
   persistExtraction,
@@ -83,6 +90,14 @@ export async function runExtraction(params: {
     }
   }
 
+  // W-2 business-rule sanity checks (both paths): payroll-ratio math + Box 12 code
+  // whitelist. Deterministic — only lower confidence / normalize codes, never
+  // change amounts.
+  if (ctx.formType === 'w2' && rows.length > 0) {
+    rows = applyW2ArithmeticChecks(rows)
+    rows = applyBox12CodeValidation(rows)
+  }
+
   const confidenceScore = meanFieldConfidence(result)
 
   try {
@@ -94,6 +109,43 @@ export async function runExtraction(params: {
   }
 
   return { ok: true, fieldCount: rows.length, formTypeMismatch: result.form_type_mismatch }
+}
+
+/** Confidence at/above which a field is considered trustworthy; below it the UI
+ * flags the field for review, so the selective-verify gate uses the same bar. */
+const VERIFY_GATE_THRESHOLD = 0.9
+
+/**
+ * Decide whether a single-pass extraction is uncertain enough to justify a second
+ * (verification) pass. Cheap + deterministic and side-effect-free: parse the raw
+ * text, flatten, and run the SAME OCR + W-2 sanity annotations used for the final
+ * rows, then check whether any field would be flagged for review. A parse failure
+ * also warrants a retry pass. Clean documents return false and stay single-pass.
+ */
+export function warrantsVerification(params: {
+  rawModelText: string
+  formType: DocumentType
+  ocrNumbers?: number[]
+  ocrStates?: string[]
+}): boolean {
+  const schema = getFormSchema(params.formType)
+  if (!schema) return false
+
+  const parsed = parseExtractionResult(params.rawModelText)
+  if (!parsed.ok) return true // unparseable single pass — a second try may succeed
+  if (parsed.data.form_type_mismatch) return false
+
+  let rows = flattenExtraction(parsed.data, schema)
+  if (rows.length === 0) return false
+
+  rows = applyOcrConfidence(rows, params.ocrNumbers)
+  rows = applyStateCoverage(rows, params.ocrStates).rows
+  if (params.formType === 'w2') {
+    rows = applyW2ArithmeticChecks(rows)
+    rows = applyBox12CodeValidation(rows)
+  }
+
+  return rows.some((r) => r.confidence !== null && r.confidence < VERIFY_GATE_THRESHOLD)
 }
 
 /** Never let the failure-marking itself throw and mask the original error. */

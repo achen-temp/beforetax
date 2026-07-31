@@ -41,6 +41,22 @@ export const OCR_UNCONFIRMED_CONFIDENCE = 0.6
 /** State section flagged because OCR saw a state the model didn't return, or a
  * duplicated state resolved with conflicting values. */
 export const STATE_COVERAGE_CONFIDENCE = 0.55
+/** A W-2 payroll ratio (SS/Medicare) doesn't reconcile — likely a digit misread. */
+export const ARITHMETIC_CONFLICT_CONFIDENCE = 0.45
+/** A W-2 Box 12 code is not a recognized IRS code — likely a misread. */
+export const BOX12_CODE_CONFIDENCE = 0.5
+
+const FICA_SS_RATE = 0.062
+const MEDICARE_RATE = 0.0145
+/** 0.9% Additional Medicare tax applies above the wage threshold, so box 6 can
+ * legitimately run up to 2.35% of box 5. */
+const ADDL_MEDICARE_RATE = 0.009
+
+/** Valid IRS W-2 Box 12 codes (letters, case-insensitive). */
+const BOX12_CODES = new Set([
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P', 'Q', 'R',
+  'S', 'T', 'V', 'W', 'Y', 'Z', 'AA', 'BB', 'DD', 'EE', 'FF', 'GG', 'HH', 'II',
+])
 
 interface KeySets {
   /** Field keys of top-level repeating {code,value} fields (matched by code). */
@@ -126,6 +142,82 @@ export function applyOcrConfidence(
     return {
       ...r,
       confidence: Math.min(r.confidence ?? OCR_UNCONFIRMED_CONFIDENCE, OCR_UNCONFIRMED_CONFIDENCE),
+    }
+  })
+}
+
+/** A top-level scalar row for a field (line_index 0), if present. */
+function findScalar(rows: DocumentFieldInput[], key: string): DocumentFieldInput | undefined {
+  return rows.find((r) => r.field_key === key && r.line_index === 0)
+}
+
+/**
+ * W-2 payroll math self-check (deterministic, W-2 only). Two fixed relationships
+ * hold on any correct W-2, so a violation is strong evidence of a digit misread
+ * in one of the boxes involved — we lower confidence on that pair to flag it for
+ * review. It NEVER changes a value.
+ *
+ *   box 4 (SS tax)       ≈ (box 3 SS wages + box 7 SS tips) × 6.2%
+ *   box 6 (Medicare tax) ∈ [box 5 × 1.45%, box 5 × 2.35%]   (upper bound includes
+ *                          the 0.9% Additional Medicare over the wage threshold)
+ *
+ * Skipped when the anchor boxes are missing or zero. The tolerance absorbs
+ * per-paycheck rounding; a transposed digit blows well past it.
+ */
+export function applyW2ArithmeticChecks(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  const flag = new Set<string>()
+
+  const ssWages = findScalar(rows, 'social_security_wages')?.value_number ?? null
+  const ssTips = findScalar(rows, 'social_security_tips')?.value_number ?? 0
+  const ssTax = findScalar(rows, 'social_security_tax_withheld')?.value_number ?? null
+  if (ssWages !== null && ssWages > 0 && ssTax !== null) {
+    const expected = (ssWages + (ssTips ?? 0)) * FICA_SS_RATE
+    const tol = Math.max(1, expected * 0.01)
+    if (Math.abs(ssTax - expected) > tol) {
+      flag.add('social_security_wages')
+      flag.add('social_security_tax_withheld')
+    }
+  }
+
+  const medWages = findScalar(rows, 'medicare_wages')?.value_number ?? null
+  const medTax = findScalar(rows, 'medicare_tax_withheld')?.value_number ?? null
+  if (medWages !== null && medWages > 0 && medTax !== null) {
+    const low = medWages * MEDICARE_RATE
+    const high = medWages * (MEDICARE_RATE + ADDL_MEDICARE_RATE)
+    const tol = Math.max(1, low * 0.01)
+    if (medTax < low - tol || medTax > high + tol) {
+      flag.add('medicare_wages')
+      flag.add('medicare_tax_withheld')
+    }
+  }
+
+  if (flag.size === 0) return rows
+  return rows.map((r) =>
+    flag.has(r.field_key) && r.line_index === 0
+      ? {
+          ...r,
+          confidence: Math.min(r.confidence ?? ARITHMETIC_CONFLICT_CONFIDENCE, ARITHMETIC_CONFLICT_CONFIDENCE),
+        }
+      : r
+  )
+}
+
+/**
+ * Validate/normalize W-2 Box 12 codes against the fixed IRS code set. Upper-cases
+ * the code (a safe normalization) and flags any row whose code is not a recognized
+ * Box 12 code for review — a likely OCR/model misread. It never invents a code or
+ * touches the amount. (Box 14 codes are employer-defined free text, so no list.)
+ */
+export function applyBox12CodeValidation(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  return rows.map((r) => {
+    if (r.field_key !== 'box12') return r
+    const norm = (r.code ?? '').trim().toUpperCase()
+    if (norm === '') return r // amount without a code — nothing to validate
+    if (BOX12_CODES.has(norm)) return norm === r.code ? r : { ...r, code: norm }
+    return {
+      ...r,
+      code: norm,
+      confidence: Math.min(r.confidence ?? BOX12_CODE_CONFIDENCE, BOX12_CODE_CONFIDENCE),
     }
   })
 }

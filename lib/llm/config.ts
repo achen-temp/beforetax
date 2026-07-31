@@ -12,9 +12,14 @@
  *                          responses (exponential backoff), default 3
  *   LLM_REASONING_EFFORT   optional default reasoning effort for gpt-5 models
  *                          (minimal | low | medium | high); callers may override
- *   LLM_VERIFY_EXTRACTION  set "true" to enable the parallel verification pass
+ *   LLM_VERIFY_EXTRACTION  set "true" to ALWAYS run the parallel verification pass
  *                          (default OFF). On = 2x tokens + cross-pass reconcile;
  *                          off = one stable single pass (still OCR-checked).
+ *   LLM_SELECTIVE_VERIFY   when VERIFY_EXTRACTION is off, still run a SECOND pass
+ *                          only for documents whose single pass looks uncertain
+ *                          (OCR disagreement, low confidence, missing state, bad
+ *                          Box 12 code, or a W-2 payroll ratio that doesn't
+ *                          reconcile). Default ON. Set "false" for pure single-pass.
  *   LLM_OCR_CROSSCHECK     when "false", disables the Tesseract OCR cross-check
  *                          on numeric fields (default on). Best-effort; ignored
  *                          for non-image inputs.
@@ -37,6 +42,7 @@ export interface LlmConfig {
   maxRetries: number
   reasoningEffort: LlmReasoningEffort | null
   verifyExtraction: boolean
+  selectiveVerify: boolean
   ocrCrossCheck: boolean
   extraHeaders: Record<string, string>
 }
@@ -97,6 +103,7 @@ export function getLlmConfig(): LlmConfig {
     maxRetries: Math.max(0, parseNumber(process.env.LLM_MAX_RETRIES, 3)),
     reasoningEffort: parseReasoningEffort(process.env.LLM_REASONING_EFFORT),
     verifyExtraction: (process.env.LLM_VERIFY_EXTRACTION ?? 'false').toLowerCase() === 'true',
+    selectiveVerify: (process.env.LLM_SELECTIVE_VERIFY ?? 'true').toLowerCase() !== 'false',
     ocrCrossCheck: (process.env.LLM_OCR_CROSSCHECK ?? 'true').toLowerCase() !== 'false',
     extraHeaders: parseExtraHeaders(process.env.LLM_EXTRA_HEADERS),
   }

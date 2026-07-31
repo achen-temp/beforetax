@@ -16,7 +16,7 @@ import {
 } from '@/lib/llm/client'
 import { getLlmConfig, type LlmReasoningEffort } from '@/lib/llm/config'
 import { extractOcrNumbers, extractStateCodes, ocrImages, type OcrImage } from '@/lib/tax/ocr'
-import { runExtraction, type ExtractionOutcome } from '@/lib/tax/run-extraction'
+import { runExtraction, warrantsVerification, type ExtractionOutcome } from '@/lib/tax/run-extraction'
 import { markExtractionFailed, type ExtractionContext } from '@/lib/supabase/extraction'
 
 /**
@@ -186,6 +186,29 @@ export async function extractAndPersistDocument(params: {
         const [primary, ocr] = await Promise.all([runOnce('high'), ocrTask])
         rawModelText = primary
         applyOcr(ocr)
+        // Selective verification: spend a 2nd pass ONLY when the 1st looks
+        // uncertain (OCR disagreement, low confidence, missing state, bad Box 12
+        // code, or a W-2 payroll ratio that doesn't reconcile). Clean documents
+        // stay single-pass, so this buys dual-pass accuracy without paying for it
+        // on every document.
+        if (
+          config.selectiveVerify &&
+          warrantsVerification({
+            rawModelText,
+            formType: params.ctx.formType,
+            ocrNumbers,
+            ocrStates,
+          })
+        ) {
+          try {
+            verifyModelText = await runOnce('high')
+          } catch (err) {
+            if (!isTimeoutError(err)) throw err
+            console.warn(
+              `[extract] selective verification pass timed out for document ${params.ctx.documentId}; keeping single-pass result`
+            )
+          }
+        }
       } catch (err) {
         if (!isTimeoutError(err)) throw err
         console.warn(
