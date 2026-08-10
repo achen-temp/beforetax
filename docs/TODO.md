@@ -4,6 +4,22 @@
 
 ---
 
+## ⚠️ 需要你手动应用的迁移
+
+### `008_firm_settings.sql` —— 待应用
+- 给 `cpa_firms` 加 `settings JSONB NOT NULL DEFAULT '{}'`（CPA 账户级配置，首个开关：跳过重复文件）。
+- 应用方式同前：Supabase SQL Editor 跑
+  ```sql
+  ALTER TABLE cpa_firms ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb;
+  ```
+- **未应用前**：设置页读取会回退到默认值（去重开启），但保存开关会失败（列不存在）。
+
+### `014_client_summaries_default_year.sql` —— 待应用
+- `client_summaries` 优先用 filing-season 默认年（`EXTRACT(YEAR FROM CURRENT_DATE) - 1`），再回退最新年。
+- Supabase SQL Editor 跑 `supabase/migrations/014_client_summaries_default_year.sql`。
+
+---
+
 ## 已完成 ✅
 
 ### 1. 内容去重迁移 `006_document_content_dedup.sql` —— 已应用（2026-07-31）
@@ -14,13 +30,13 @@
 - `ALTER TYPE extraction_status ADD VALUE IF NOT EXISTS 'queued';`
 - 已在 Supabase SQL Editor 执行，队列写状态不再报 enum 错。
 
+### 3. 内容去重（前端 SHA-256）—— 已验证（2026-07-31）
+- `lib/files.ts#sha256Hex`、上传组件发 `fileHash`、`route.ts` 上传前查重 + 竞态 409、`documents.ts#findDocumentByHash` / `DuplicateDocumentError`。
+- 端到端验证通过：重复文件被拦并提示。
+
 ---
 
 ## 已实现，待端到端验证
-
-### 3. 内容去重（前端 SHA-256）
-- 已完成：`lib/files.ts#sha256Hex`、上传组件发 `fileHash`、`route.ts` 上传前查重 + 竞态 409、`documents.ts#findDocumentByHash` / `DuplicateDocumentError`。
-- 待验证：同一文件二次上传被拦（提示"已上传过…"）；改一个字节后可正常上传；并发双击只入库一条。
 
 ### 4. W-2 抽取优化（算术自检 / Box 12 码校验 / 选择性二次通过）
 - 已完成：`reconcile-extraction.ts` 的 `applyW2ArithmeticChecks` + `applyBox12CodeValidation`；`run-extraction.ts#warrantsVerification`；`config.ts#selectiveVerify`（`LLM_SELECTIVE_VERIFY`，默认开）。
@@ -44,6 +60,19 @@
 - 场景：一次扫描里既有 W-2 又有 1099，当成一个文件上传。
 - 现状：整份当一个文档抽取，无法分别识别/命名/入库。
 - 需要：先做页面/表单分割，再对每一份分别分类、抽取、命名。属于比 #5 更底层的能力，单独排期。
+
+---
+
+## 推迟做（有设计，未实现）
+
+### 7. 正式接入 Resend 发信（目前本地用 dev mode）
+- 现状：未配 `RESEND_API_KEY` 时走 dev mode，CPA UI / 控制台直接显示 OTP + portal link，不真发邮件。
+- 上线前：
+  - 配置平台级 `RESEND_API_KEY` + `RESEND_FROM_EMAIL`（如 `BeforeTax <noreply@verified-domain.com>`）。
+  - 验证域名；关掉/收紧把 OTP、portal URL 回传给前端的路径。
+  - `NEXT_PUBLIC_APP_URL` 指向正式域名（邮件里的 magic link 才对）。
+- **不需要**把每家 CPA firm 的邮箱都加进 Resend；默认共用平台发件人。
+- 可选后续：From 仍用平台，Reply-To 用 firm 邮箱；或每家自有域名发信（复杂，非 MVP）。
 
 ---
 

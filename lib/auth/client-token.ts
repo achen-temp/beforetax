@@ -3,6 +3,8 @@ import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 
 export const CLIENT_SESSION_COOKIE = 'client_session'
+/** Short-lived portal link token after email login (before OTP verify). */
+export const PORTAL_PENDING_COOKIE = 'bt_portal_pending'
 
 export interface ClientSessionPayload {
   clientId: string
@@ -59,4 +61,35 @@ export function clearClientSessionCookie(response: NextResponse) {
     path: '/',
     maxAge: 0,
   })
+}
+
+export function setPortalPendingCookie(response: NextResponse, portalToken: string) {
+  response.cookies.set(PORTAL_PENDING_COOKIE, portalToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60, // 1 hour to complete OTP
+  })
+}
+
+export function clearPortalPendingCookie(response: NextResponse) {
+  response.cookies.set(PORTAL_PENDING_COOKIE, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  })
+}
+
+export async function getPortalPendingTokenFromCookies(): Promise<string | null> {
+  const cookieStore = await cookies()
+  const value = cookieStore.get(PORTAL_PENDING_COOKIE)?.value
+  if (!value) return null
+  // portal_token is a UUID
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    return null
+  }
+  return value
 }

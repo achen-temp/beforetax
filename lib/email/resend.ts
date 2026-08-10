@@ -1,20 +1,24 @@
 import { Resend } from 'resend'
 import { PLATFORM_NAME } from '@/lib/brand'
 
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null
+function getResend() {
+  const apiKey = process.env.RESEND_API_KEY?.trim()
+  if (!apiKey) return null
+  return new Resend(apiKey)
+}
 
 const FROM_EMAIL =
-  process.env.RESEND_FROM_EMAIL ?? `${PLATFORM_NAME} <onboarding@resend.dev>`
+  process.env.RESEND_FROM_EMAIL?.trim() ||
+  `${PLATFORM_NAME} <onboarding@resend.dev>`
 
 export async function sendClientOtpEmail(input: {
   to: string
   clientName: string
   otp: string
   portalUrl: string
-}) {
+}): Promise<{ devMode: boolean }> {
   const { to, clientName, otp, portalUrl } = input
+  const resend = getResend()
 
   const html = `
     <div style="font-family: Inter, system-ui, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1a1a;">

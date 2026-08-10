@@ -1,5 +1,6 @@
 import { getClientSessionFromCookies } from '@/lib/auth/client-token'
 import { getClientTaxData } from '@/lib/supabase/tax-data'
+import { resolvePortalTaxYear } from '@/lib/tax/portal-active-year'
 import { NextResponse } from 'next/server'
 
 export async function GET() {
@@ -9,7 +10,11 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' }, { status: 401 })
     }
 
-    const data = await getClientTaxData(session.clientId, session.firmId)
+    const taxYear = await resolvePortalTaxYear({
+      clientId: session.clientId,
+      firmId: session.firmId,
+    })
+    const data = await getClientTaxData(session.clientId, session.firmId, taxYear.year)
     if (!data) {
       return NextResponse.json({ error: 'Tax year not found', code: 'NOT_FOUND' }, { status: 404 })
     }

@@ -17,9 +17,15 @@ export interface OcrImage {
   mimeType: string
 }
 
-export async function ocrImages(images: OcrImage[]): Promise<string> {
+/**
+ * OCR each image separately, returning one text string per input image (same
+ * order). Empty array on any failure so callers are never blocked by OCR. Used
+ * both for the combined cross-check text (ocrImages) and per-page signals for
+ * segmentation.
+ */
+export async function ocrPages(images: OcrImage[]): Promise<string[]> {
   const targets = images.filter((i) => i.mimeType.startsWith('image/'))
-  if (targets.length === 0) return ''
+  if (targets.length === 0) return []
 
   let worker: Awaited<ReturnType<typeof createWorker>> | null = null
   try {
@@ -34,13 +40,55 @@ export async function ocrImages(images: OcrImage[]): Promise<string> {
       const { data } = await worker.recognize(buf)
       parts.push(data.text ?? '')
     }
-    return parts.join('\n')
+    return parts
   } catch (err) {
     console.warn('[ocr] cross-check skipped:', err instanceof Error ? err.message : err)
-    return ''
+    return []
   } finally {
     if (worker) await worker.terminate().catch(() => {})
   }
+}
+
+export async function ocrImages(images: OcrImage[]): Promise<string> {
+  return (await ocrPages(images)).join('\n')
+}
+
+/** Coarse form "family" for cross-checking a page's detected type without caring
+ * about the exact variant (all 1099-* collapse to '1099'). */
+export function formFamily(formType: string | null | undefined): string | null {
+  if (!formType) return null
+  const t = formType.toLowerCase()
+  if (t.includes('w-2') || t === 'w2' || t.startsWith('w2')) return 'w2'
+  if (t.includes('ssa')) return 'ssa_1099'
+  if (t.includes('1095')) return '1095'
+  if (t.includes('1099')) return '1099'
+  if (t.includes('1098')) return '1098'
+  if (t.includes('1040')) return '1040'
+  if (t.includes('k-1') || t.includes('k1')) return 'k1'
+  return null
+}
+
+/** Anchor phrases/ids that reliably identify a form family in OCR text. Checked
+ * most-specific-first so a "1099-NEC" page isn't shadowed by a generic match. */
+const FORM_ANCHORS: { family: string; patterns: RegExp[] }[] = [
+  { family: 'w2', patterns: [/wage and tax statement/i, /\b1545-0008\b/, /\bW-?2\b/] },
+  { family: 'ssa_1099', patterns: [/form\s*ssa-?1099/i, /social security benefit statement/i] },
+  { family: '1095', patterns: [/\b1095-?A\b/i, /health insurance marketplace statement/i] },
+  {
+    family: '1099',
+    patterns: [/\b1099-?(?:NEC|INT|DIV|MISC|B|R|G|K|S|OID)\b/i, /\b1099\b/],
+  },
+  { family: '1098', patterns: [/mortgage interest statement/i, /\b1098-?[ET]?\b/i] },
+  { family: 'k1', patterns: [/schedule k-?1/i] },
+]
+
+/** Best-effort form family for one page from its OCR text, or null if no anchor
+ * matched (e.g. a blank/continuation page or garbled scan). A hint only. */
+export function detectFormFamily(text: string): string | null {
+  for (const anchor of FORM_ANCHORS) {
+    if (anchor.patterns.some((p) => p.test(text))) return anchor.family
+  }
+  return null
 }
 
 /**

@@ -3,10 +3,9 @@ import { getFormSchema } from '@/lib/tax/field-schemas'
 import { parseExtractionResult } from '@/lib/tax/extraction-result'
 import { flattenExtraction, meanFieldConfidence } from '@/lib/tax/flatten-extraction'
 import {
-  applyBox12CodeValidation,
+  applyFormSanityChecks,
   applyOcrConfidence,
   applyStateCoverage,
-  applyW2ArithmeticChecks,
   reconcileRows,
 } from '@/lib/tax/reconcile-extraction'
 import {
@@ -90,13 +89,9 @@ export async function runExtraction(params: {
     }
   }
 
-  // W-2 business-rule sanity checks (both paths): payroll-ratio math + Box 12 code
-  // whitelist. Deterministic — only lower confidence / normalize codes, never
-  // change amounts.
-  if (ctx.formType === 'w2' && rows.length > 0) {
-    rows = applyW2ArithmeticChecks(rows)
-    rows = applyBox12CodeValidation(rows)
-  }
+  // Per-form business-rule sanity checks (both paths). Deterministic — only
+  // lower confidence / normalize codes, never change amounts.
+  rows = applyFormSanityChecks(ctx.formType, rows)
 
   const confidenceScore = meanFieldConfidence(result)
 
@@ -118,9 +113,10 @@ const VERIFY_GATE_THRESHOLD = 0.9
 /**
  * Decide whether a single-pass extraction is uncertain enough to justify a second
  * (verification) pass. Cheap + deterministic and side-effect-free: parse the raw
- * text, flatten, and run the SAME OCR + W-2 sanity annotations used for the final
- * rows, then check whether any field would be flagged for review. A parse failure
- * also warrants a retry pass. Clean documents return false and stay single-pass.
+ * text, flatten, and run the SAME OCR + form sanity annotations used for the
+ * final rows, then check whether any field would be flagged for review. A parse
+ * failure also warrants a retry pass. Clean documents return false and stay
+ * single-pass.
  */
 export function warrantsVerification(params: {
   rawModelText: string
@@ -140,10 +136,7 @@ export function warrantsVerification(params: {
 
   rows = applyOcrConfidence(rows, params.ocrNumbers)
   rows = applyStateCoverage(rows, params.ocrStates).rows
-  if (params.formType === 'w2') {
-    rows = applyW2ArithmeticChecks(rows)
-    rows = applyBox12CodeValidation(rows)
-  }
+  rows = applyFormSanityChecks(params.formType, rows)
 
   return rows.some((r) => r.confidence !== null && r.confidence < VERIFY_GATE_THRESHOLD)
 }

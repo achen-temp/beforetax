@@ -10,6 +10,7 @@ export const DOCUMENT_TYPES = [
   '1099_misc',
   '1099_r',
   '1099_g',
+  '1099_k',
   '1099_q',
   '1099_sa',
   '1098',

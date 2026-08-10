@@ -1,5 +1,7 @@
+import type { DocumentType } from '@/lib/tax/document-types'
 import type { DocumentFieldInput } from '@/lib/tax/flatten-extraction'
 import type { FormSchema } from '@/lib/tax/field-schemas'
+import { isValid1099RDistributionCode } from '@/lib/tax/1099-r-codes'
 
 /**
  * Cross-checks two independent extraction passes over the same document and
@@ -45,6 +47,10 @@ export const STATE_COVERAGE_CONFIDENCE = 0.55
 export const ARITHMETIC_CONFLICT_CONFIDENCE = 0.45
 /** A W-2 Box 12 code is not a recognized IRS code — likely a misread. */
 export const BOX12_CODE_CONFIDENCE = 0.5
+/** A Phase-1 form business rule failed (e.g. SSA net ≠ paid − repaid). */
+export const FORM_RULE_CONFLICT_CONFIDENCE = 0.45
+/** 1099-R Box 7 code not in the IRS distribution-code set. */
+export const DIST_CODE_CONFIDENCE = 0.5
 
 const FICA_SS_RATE = 0.062
 const MEDICARE_RATE = 0.0145
@@ -220,6 +226,113 @@ export function applyBox12CodeValidation(rows: DocumentFieldInput[]): DocumentFi
       confidence: Math.min(r.confidence ?? BOX12_CODE_CONFIDENCE, BOX12_CODE_CONFIDENCE),
     }
   })
+}
+
+function flagScalarKeys(rows: DocumentFieldInput[], keys: Set<string>): DocumentFieldInput[] {
+  if (keys.size === 0) return rows
+  return rows.map((r) =>
+    keys.has(r.field_key) && r.line_index === 0
+      ? {
+          ...r,
+          confidence: Math.min(
+            r.confidence ?? FORM_RULE_CONFLICT_CONFIDENCE,
+            FORM_RULE_CONFLICT_CONFIDENCE
+          ),
+        }
+      : r
+  )
+}
+
+/** SSA-1099: box 5 ≈ box 3 − box 4 when all three amounts are present. */
+export function applySsa1099Checks(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  const paid = findScalar(rows, 'benefits_paid')?.value_number ?? null
+  const repaid = findScalar(rows, 'benefits_repaid')?.value_number ?? null
+  const net = findScalar(rows, 'net_benefits')?.value_number ?? null
+  if (paid === null || repaid === null || net === null) return rows
+  const expected = paid - repaid
+  const tol = Math.max(1, Math.abs(expected) * 0.01)
+  if (Math.abs(net - expected) <= tol) return rows
+  return flagScalarKeys(rows, new Set(['benefits_paid', 'benefits_repaid', 'net_benefits']))
+}
+
+/** 1099-DIV: qualified dividends (1b) must not exceed ordinary dividends (1a). */
+export function apply1099DivChecks(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  const ordinary = findScalar(rows, 'total_ordinary_dividends')?.value_number ?? null
+  const qualified = findScalar(rows, 'qualified_dividends')?.value_number ?? null
+  if (ordinary === null || qualified === null) return rows
+  if (qualified <= ordinary + 0.01) return rows
+  return flagScalarKeys(rows, new Set(['total_ordinary_dividends', 'qualified_dividends']))
+}
+
+/** 1099-NEC: federal withholding should not exceed nonemployee compensation. */
+export function apply1099NecChecks(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  const income = findScalar(rows, 'nonemployee_compensation')?.value_number ?? null
+  const withheld = findScalar(rows, 'federal_tax_withheld')?.value_number ?? null
+  if (income === null || withheld === null || withheld <= 0) return rows
+  if (withheld <= income + 0.01) return rows
+  return flagScalarKeys(rows, new Set(['nonemployee_compensation', 'federal_tax_withheld']))
+}
+
+/** 1099-R: normalize + validate Box 7 distribution code(s). */
+export function apply1099RCodeValidation(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  return rows.map((r) => {
+    if (r.field_key !== 'distribution_code' || r.line_index !== 0) return r
+    const raw = (r.value_text ?? '').trim()
+    if (!raw) return r
+    const norm = raw.toUpperCase().replace(/[\s,/]+/g, '')
+    const next = norm === r.value_text ? r : { ...r, value_text: norm }
+    if (isValid1099RDistributionCode(norm)) return next
+    return {
+      ...next,
+      confidence: Math.min(next.confidence ?? DIST_CODE_CONFIDENCE, DIST_CODE_CONFIDENCE),
+    }
+  })
+}
+
+const SA_DIST_CODES = new Set(['1', '2', '3', '4', '5', '6'])
+
+/** 1099-SA: Box 3 is a single digit 1–6. */
+export function apply1099SaCodeValidation(rows: DocumentFieldInput[]): DocumentFieldInput[] {
+  return rows.map((r) => {
+    if (r.field_key !== 'distribution_code' || r.line_index !== 0) return r
+    const raw = (r.value_text ?? '').trim()
+    if (!raw) return r
+    const norm = raw.replace(/\D/g, '').slice(0, 1)
+    const next = norm && norm !== r.value_text ? { ...r, value_text: norm } : r
+    if (norm && SA_DIST_CODES.has(norm)) return next
+    return {
+      ...next,
+      confidence: Math.min(next.confidence ?? DIST_CODE_CONFIDENCE, DIST_CODE_CONFIDENCE),
+    }
+  })
+}
+
+/**
+ * Deterministic per-form sanity checks after flatten/reconcile. Only lowers
+ * confidence (or normalizes codes) — never changes amounts. Safe to run on both
+ * the single-pass and dual-pass paths.
+ */
+export function applyFormSanityChecks(
+  formType: DocumentType,
+  rows: DocumentFieldInput[]
+): DocumentFieldInput[] {
+  if (rows.length === 0) return rows
+  switch (formType) {
+    case 'w2':
+      return applyBox12CodeValidation(applyW2ArithmeticChecks(rows))
+    case 'ssa_1099':
+      return applySsa1099Checks(rows)
+    case '1099_div':
+      return apply1099DivChecks(rows)
+    case '1099_nec':
+      return apply1099NecChecks(rows)
+    case '1099_r':
+      return apply1099RCodeValidation(rows)
+    case '1099_sa':
+      return apply1099SaCodeValidation(rows)
+    default:
+      return rows
+  }
 }
 
 /** Concrete 2-letter state code for an entry, or null (blank / "all states"). */

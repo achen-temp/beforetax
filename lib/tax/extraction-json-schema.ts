@@ -103,8 +103,12 @@ export function buildExtractionJsonSchema(formType: DocumentType): {
     throw new Error(`No field schema defined for form type: ${formType}`)
   }
 
+  // Reserved boxes (e.g. W-2 box 9) never carry data — keep them out of the
+  // extraction schema entirely so the model is never asked to read them.
+  const extractedFields = schema.fields.filter((f) => !f.reserved)
+
   const fieldProperties: Record<string, JsonSchema> = {}
-  for (const field of schema.fields) {
+  for (const field of extractedFields) {
     fieldProperties[field.key] = fieldWrapper(valueSchemaFor(field))
   }
 
@@ -138,7 +142,7 @@ export function buildExtractionJsonSchema(formType: DocumentType): {
       fields: {
         type: 'object',
         additionalProperties: false,
-        required: schema.fields.map((f) => f.key),
+        required: extractedFields.map((f) => f.key),
         properties: fieldProperties,
       },
       warnings: {

@@ -33,7 +33,7 @@ export function PortalBrandPanel({
                 {name ? ` for ${name}` : ''}.
               </>
             ) : (
-              'Enter the verification code from your email to upload tax documents securely.'
+              'Enter the email your CPA has on file to get a verification code and upload tax documents securely.'
             )}
           </p>
         </div>

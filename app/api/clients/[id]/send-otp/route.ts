@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { getFirmId } from '@/lib/supabase/auth'
-import { refreshClientOtp } from '@/lib/supabase/clients'
+import { markClientOtpSent, refreshClientOtp } from '@/lib/supabase/clients'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit } from '@/lib/auth/rate-limit'
 import { NextResponse } from 'next/server'
@@ -47,10 +47,12 @@ export async function POST(
       otp,
       portalUrl: portalUrl(portalToken),
     })
+    const otpSentAt = await markClientOtpSent(client.id, firmId)
 
     return NextResponse.json({
       success: true,
       emailSent: !emailResult.devMode,
+      otpSentAt,
       ...(emailResult.devMode ? { devOtp: otp, portalUrl: portalUrl(portalToken) } : {}),
     })
   } catch (error) {

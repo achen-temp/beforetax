@@ -87,6 +87,8 @@ export function flattenExtraction(result: ExtractionResult, schema: FormSchema):
   const rows: DocumentFieldInput[] = []
 
   for (const field of schema.fields) {
+    // Reserved boxes (e.g. W-2 box 9) are display-only and never persisted.
+    if (field.reserved) continue
     const extracted = result.fields[field.key]
     if (!extracted) continue
     const confidence = extracted.confidence ?? null

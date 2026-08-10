@@ -52,6 +52,7 @@ VALUE FORMATTING
 - Negative amounts: parentheses "(1,200)" or a leading minus mean negative (-1200).
 - Dates: ISO "YYYY-MM-DD". If only a year is printed, use "YYYY-01-01".
 - Text: exactly as printed, trimmed. Preserve EIN/TIN formatting (e.g. "12-3456789").
+- SSN/TIN on the recipient/employee/borrower: transcribe as printed. If the form shows the FULL number, return the full number. If digits are masked (X, *, •, etc.), keep the mask and only the visible trailing digits (usually last 4) — never invent hidden digits.
 
 CONFIDENCE CALIBRATION (0.0-1.0)
 - 0.95-1.0: crisp, digitally-generated text, unambiguous.
@@ -86,6 +87,7 @@ export function buildClassificationPrompt(): string {
 }
 Rules:
 - Base form_type on the form title, official box layout, and issuer. If it is not a recognizable tax form, return "unknown".
+- recipient_tin_last4: last 4 digits of the recipient SSN/TIN only (whether the form is masked or shows a full number).
 - printed_tax_year: return ONLY the tax year explicitly printed on the form. Do NOT infer it from statement dates, mailing dates, or "for year" text on cover pages. If not explicitly printed, return null.
 - document_quality: "high" = crisp digital/clean scan; "medium" = readable photo/scan with noise; "low" = blurry, skewed, shadowed, or partially cut off.
 - confidence: how certain you are about form_type (separate from document_quality).
@@ -136,7 +138,10 @@ function renderShapeValue(f: FieldDefinition): string {
 /** The exact JSON envelope the model must return, generated from the schema so
  * the enforced json_schema, the prompt, and the DB rows always agree. */
 function renderOutputTemplate(formType: DocumentType, schema: FieldDefinition[]): string {
-  const schemaShape = schema.map((f) => `    "${f.key}": ${renderShapeValue(f)}`).join(',\n')
+  const schemaShape = schema
+    .filter((f) => !f.reserved)
+    .map((f) => `    "${f.key}": ${renderShapeValue(f)}`)
+    .join(',\n')
   return `Return exactly this JSON shape:
 {
   "form_type": "${formType}",
@@ -161,7 +166,8 @@ ${schemaShape}
  * FIELD_SCHEMAS so the output lines up 1:1 with document_fields rows. Box
  * numbers are attached server-side from the schema (deterministic), so the
  * model is NOT asked to return them. W-2 uses a dedicated, box-by-box prompt
- * (buildW2UserPrompt); other forms use the generic schema-driven prompt.
+ * (buildW2UserPrompt); Phase-1 information returns (1099-*, 1098*, SSA-1099,
+ * 1095-A) use the generic schema-driven prompt plus optional schema.notes.
  */
 export function buildExtractionUserPrompt(formType: DocumentType): string {
   const schema = getFormSchema(formType)
@@ -173,7 +179,7 @@ export function buildExtractionUserPrompt(formType: DocumentType): string {
 }
 
 function buildGenericUserPrompt(formType: DocumentType, schema: FormSchema): string {
-  const fieldSpec = schema.fields.map(renderFieldSpec).join('\n')
+  const fieldSpec = schema.fields.filter((f) => !f.reserved).map(renderFieldSpec).join('\n')
 
   const formNotes =
     schema.notes && schema.notes.length > 0
@@ -195,7 +201,7 @@ Reminders:
 - For group fields (e.g. state/local tax): return ONE object per distinct printed row. If a form reports NJ, NY and PA, return three separate objects — never merge states or concatenate their values. Return [] if the section is blank.
 - For fixed-slot fields: return an object with a key for EVERY slot ("a","b","c","d"), one per physical printed line and in order. Read each line independently; put null in both "code" and "value" for blank lines. Do NOT skip, merge, or shift lines, and never use the slot letter as the code.
 - Scan EVERY copy and page: this document may contain multiple copies of the same form. Money boxes repeat identically across copies (report once, never sum), while state/local rows are often split across different copies. Union all distinct state/local rows found anywhere, and drop exact duplicate reprints.
-- document_identity is used to link corrected/duplicate versions of the same form; fill last-4 only for TIN and account number, never full numbers.
+- document_identity is used to link corrected/duplicate versions of the same form. For recipient_tin_last4 and account_number_last4, store ONLY the last 4 visible digits (whether the form was masked or showed a full number).
 - printed_tax_year: only the year explicitly printed on the form; never infer from dates. Use null if absent.
 - Values must be printed on the document; use null when absent; never calculate or infer.`
 }
@@ -209,7 +215,7 @@ Reminders:
  */
 function buildW2UserPrompt(): string {
   const schema = getFormSchema('w2')!
-  const fieldSpec = schema.fields.map(renderFieldSpec).join('\n')
+  const fieldSpec = schema.fields.filter((f) => !f.reserved).map(renderFieldSpec).join('\n')
 
   return `Expected form type: ${schema.label} (w2)
 
@@ -220,8 +226,15 @@ HOW W-2 COPIES WORK (read this before extracting)
 - Boxes 1-14 (wages, taxes, box 12/13/14) are IDENTICAL on every copy. Read them once from the clearest copy. NEVER add copies together.
 - Boxes 15-20 (state/local) are frequently DIFFERENT per copy: the Federal copy often leaves them blank, and when there are two states each state usually appears on its own copy. You MUST scan every copy and UNION all distinct state and local rows.
 
+CROSS-COPY VERIFICATION (do this before finalizing numbers)
+- After reading every copy, CROSS-CHECK values that reprint across copies (Box 1–14, and any state/local row that appears on more than one copy). Prefer a value that appears consistently on 2+ copies.
+- If two clear copies disagree on the same box (e.g. Box 1 differs), keep the clearer reading but set that field's confidence ≤ 0.55 and add "illegible_values" to warnings — do not average or invent a third number.
+- State rows (15–17): keep NJ and PA (etc.) as SEPARATE entries. Never merge two states' Box 16/17 into one row. Drop only exact duplicate reprints of the same state + same amounts.
+- Box 13: read the checkbox COLUMN carefully on the clearest copy; unmarked = "false", marked = "true".
+- Do not "fix" unusual but clearly printed values (e.g. two Box 12 lines both coded DD with different amounts) — transcribe as printed.
+
 BOX-BY-BOX GUIDE (return every key below; use null for any box that is blank)
-- Identity: employer_name (box c), employer_ein (box b). document_identity.recipient_* comes from the employee side (box e/f), last 4 of SSN only.
+- Identity: tax_year (the 4-digit year printed on the form, e.g. 2025 — usually top-right or in the form title), employee_name (box e, the person the W-2 is for), employee_ssn (box a — transcribe EXACTLY as printed: full SSN if unmasked; if masked with X/*/•, return the masked form with visible last 4 only; never invent hidden digits), employer_name (box c), employer_ein (box b). document_identity.recipient_* mirrors the employee side; recipient_tin_last4 is always the last 4 digits only (for matching).
 - Wages & taxes: wages (box 1), federal_tax_withheld (2), social_security_wages (3), social_security_tax_withheld (4), medicare_wages (5), medicare_tax_withheld (6), social_security_tips (7), allocated_tips (8), dependent_care_benefits (10), nonqualified_plans (11). Transcribe each amount digit-for-digit including the decimal; re-read once to guard against transposed digits (e.g. 137,264.26 vs 137,246.26).
 - Box 12 (box12): exactly four physical lines 12a/12b/12c/12d. Return an object with keys "a","b","c","d" in order. For each line put the printed IRS CODE (D, DD, W, C, AA, ...) in "code" and its amount in "value". The letters a-d are line POSITIONS, never the code. Blank line -> both null. Do not shift entries up to fill earlier slots.
 - Box 13 checkboxes: statutory_employee, retirement_plan, third_party_sick_pay — return "true" if the box is marked, else "false".
@@ -237,6 +250,7 @@ ${renderOutputTemplate('w2', schema.fields)}
 Reminders:
 - Return EVERY field key above, and for box12/box14 every slot "a"-"d"; a box that is blank on the form is null (not omitted).
 - Money boxes 1-14 are read ONCE and never summed across copies; state/local rows are UNIONED across copies.
+- Cross-check reprinted amounts across copies before locking the answer.
 - Values must be printed on the document; use null when absent; never calculate, infer, or give tax advice.`
 }
 

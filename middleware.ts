@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const CPA_ROUTE_PREFIXES = ['/dashboard', '/clients', '/settings', '/admin']
+const CPA_ROUTE_PREFIXES = ['/dashboard', '/clients', '/settings', '/admin', '/account']
 
 function isCpaRoute(pathname: string) {
   return CPA_ROUTE_PREFIXES.some(
@@ -50,7 +50,7 @@ export async function middleware(request: NextRequest) {
 
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone()
-    url.pathname = '/dashboard'
+    url.pathname = '/clients'
     url.search = ''
     return NextResponse.redirect(url)
   }
@@ -68,6 +68,8 @@ export const config = {
     '/settings/:path*',
     '/admin',
     '/admin/:path*',
+    '/account',
+    '/account/:path*',
     '/login',
     '/signup',
   ],

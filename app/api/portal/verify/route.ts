@@ -5,7 +5,9 @@ import {
 } from '@/lib/supabase/clients'
 import { verifyOtp } from '@/lib/auth/otp'
 import {
+  clearPortalPendingCookie,
   createClientToken,
+  getPortalPendingTokenFromCookies,
   setClientSessionCookie,
 } from '@/lib/auth/client-token'
 import { checkRateLimit, getClientIp } from '@/lib/auth/rate-limit'
@@ -33,15 +35,26 @@ export async function POST(request: Request) {
       )
     }
 
-    const client = await getClientByPortalToken(result.data.token)
+    const token = result.data.token ?? (await getPortalPendingTokenFromCookies())
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Incorrect verification code', code: 'INVALID_OTP' },
+        { status: 401 }
+      )
+    }
+
+    const client = await getClientByPortalToken(token)
     if (!client) {
-      return NextResponse.json({ error: 'Invalid portal link', code: 'NOT_FOUND' }, { status: 404 })
+      return NextResponse.json(
+        { error: 'Incorrect verification code', code: 'INVALID_OTP' },
+        { status: 401 }
+      )
     }
 
     const credentials = await getClientOtpCredentials(client.id)
     if (!credentials?.otp_token) {
       return NextResponse.json(
-        { error: 'This code has already been used. Ask your CPA for a new link.', code: 'OTP_USED' },
+        { error: 'This code has already been used. Request a new code to continue.', code: 'OTP_USED' },
         { status: 400 }
       )
     }
@@ -60,6 +73,7 @@ export async function POST(request: Request) {
     const jwt = await createClientToken(client.id, client.firm_id)
     const response = NextResponse.json({ success: true, redirect: '/portal/upload' })
     setClientSessionCookie(response, jwt)
+    clearPortalPendingCookie(response)
     return response
   } catch (error) {
     console.error('POST /api/portal/verify error:', error)

@@ -72,17 +72,34 @@ export async function persistExtraction(params: {
   const { ctx, result, rows, confidenceScore, rawResponse } = params
   const admin = createAdminClient()
 
+  // Preserve human work across re-runs: rows a CPA verified or a client corrected
+  // are kept; only untouched AI rows are replaced. Their composite keys are read
+  // first so the fresh AI rows that would collide with them are dropped (the
+  // unique(document_id, owner, field_key, box, line_index) constraint).
+  const fieldKey = (r: { owner?: string; field_key: string; box: string | null; line_index: number }) =>
+    `${r.owner ?? ctx.owner}|${r.field_key}|${r.box ?? ''}|${r.line_index}`
+
+  const { data: keptRows } = await admin
+    .from('document_fields')
+    .select('owner, field_key, box, line_index')
+    .eq('document_id', ctx.documentId)
+    .or('is_verified.eq.true,client_edited.eq.true')
+  const keptKeys = new Set((keptRows ?? []).map((r) => fieldKey(r)))
+
   const { error: deleteError } = await admin
     .from('document_fields')
     .delete()
     .eq('document_id', ctx.documentId)
+    .eq('is_verified', false)
+    .eq('client_edited', false)
   if (deleteError) {
     await markExtractionFailed(ctx.documentId, `Clearing old fields failed: ${deleteError.message}`, rawResponse)
     throw new Error(deleteError.message)
   }
 
-  if (rows.length > 0) {
-    const insertRows = rows.map((r) => ({
+  const freshRows = rows.filter((r) => !keptKeys.has(fieldKey(r)))
+  if (freshRows.length > 0) {
+    const insertRows = freshRows.map((r) => ({
       firm_id: ctx.firmId,
       tax_year_id: ctx.taxYearId,
       document_id: ctx.documentId,

@@ -1,6 +1,6 @@
-const ALLOWED_PREFIXES = ['/dashboard', '/clients', '/settings']
+const ALLOWED_PREFIXES = ['/dashboard', '/clients', '/settings', '/admin', '/account']
 
-export function safeRedirect(path: string | null, fallback = '/dashboard'): string {
+export function safeRedirect(path: string | null, fallback = '/clients'): string {
   if (!path || !path.startsWith('/') || path.startsWith('//')) {
     return fallback
   }

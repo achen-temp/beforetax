@@ -5,11 +5,9 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDropzone } from 'react-dropzone'
 import {
-  Bell,
   Briefcase,
   ChevronDown,
   ChevronRight,
-  Clock,
   Copy,
   DollarSign,
   FileSpreadsheet,
@@ -19,11 +17,11 @@ import {
   Loader2,
   Lock,
   MessageSquare,
-  Shield,
   UploadCloud,
   Users,
 } from 'lucide-react'
 import { BrandLogo } from '@/components/brand-logo'
+import { SiteFooter } from '@/components/site-footer'
 import { Button } from '@/components/ui/button'
 import {
   ACCEPTED_FILE_TYPES,
@@ -33,6 +31,8 @@ import {
   sha256Hex,
   validateFile,
 } from '@/lib/files'
+import { defaultTaxYear } from '@/lib/tax/default-tax-year'
+import { TaxYearSelect } from '@/components/tax/tax-year-select'
 
 interface DocumentRow {
   id: string
@@ -47,6 +47,7 @@ interface SessionInfo {
   email: string
   initials: string
   taxYear: number
+  taxYears: number[]
 }
 
 function formatRelativeTime(iso: string) {
@@ -81,27 +82,6 @@ function isPending(status: string): boolean {
   return status === 'queued' || status === 'processing'
 }
 
-const SECURITY_FEATURES = [
-  {
-    icon: Shield,
-    iconClass: 'text-emerald-600 bg-emerald-50',
-    title: 'Your data is secure',
-    description: 'We use bank-level security and never share your information.',
-  },
-  {
-    icon: Clock,
-    iconClass: 'text-violet-600 bg-violet-50',
-    title: 'Auto-save enabled',
-    description: 'Your progress is saved automatically.',
-  },
-  {
-    icon: Bell,
-    iconClass: 'text-amber-600 bg-amber-50',
-    title: "We'll notify you",
-    description: "You'll get an email if we need anything else.",
-  },
-] as const
-
 export function PortalUploadDashboard() {
   const router = useRouter()
   const [session, setSession] = useState<SessionInfo | null>(null)
@@ -109,7 +89,12 @@ export function PortalUploadDashboard() {
   const [showAllDocs, setShowAllDocs] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
+  /** When set, shows “Uploading 2 of 5…” during a multi-file batch. */
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(
+    null
+  )
   const [error, setError] = useState<string | null>(null)
+  const [statusNote, setStatusNote] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   const loadData = useCallback(async () => {
@@ -150,67 +135,102 @@ export function PortalUploadDashboard() {
     [loadData]
   )
 
+  /** Upload + enqueue one file. Returns a result so a batch can continue after
+   * a single failure or duplicate — never aborts the whole selection. */
+  const uploadOneFile = useCallback(
+    async (file: File): Promise<'uploaded' | 'duplicate' | 'error'> => {
+      validateFile(file)
+
+      // Hash before minting an upload URL so identical re-uploads are rejected
+      // without receiving the bytes.
+      const fileHash = await sha256Hex(file)
+
+      const res = await fetch('/api/portal/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          fileHash,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 409 && data.code === 'DUPLICATE') {
+        return 'duplicate'
+      }
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === 'string' ? data.error : `Failed to upload “${file.name}”`
+        )
+      }
+
+      const uploadRes = await fetch(data.uploadUrl as string, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      })
+      if (!uploadRes.ok) throw new Error(`Failed to store “${file.name}”`)
+
+      const documentId = (data.document as { id: string }).id
+      // Enqueue extraction immediately; batch continues with the next file.
+      void enqueueAndRefresh(documentId)
+      return 'uploaded'
+    },
+    [enqueueAndRefresh]
+  )
+
   const onDrop = useCallback(
     async (files: File[]) => {
-      const file = files[0]
-      if (!file) return
+      if (files.length === 0) return
 
       setError(null)
-
-      try {
-        validateFile(file)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Invalid file')
-        return
-      }
-
+      setStatusNote(null)
       setUploading(true)
+      setUploadProgress({ current: 0, total: files.length })
 
-      try {
-        // Hash the bytes before asking for an upload URL so the server can reject
-        // an identical re-upload without receiving the file.
-        const fileHash = await sha256Hex(file)
+      let uploaded = 0
+      let duplicates = 0
+      const failures: string[] = []
 
-        const res = await fetch('/api/portal/documents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileName: file.name,
-            fileSize: file.size,
-            mimeType: file.type,
-            fileHash,
-          }),
-        })
-        const data = await res.json()
-        // Duplicate content: surface the notice and refresh so the existing doc
-        // is visible; not a hard failure.
-        if (res.status === 409 && data.code === 'DUPLICATE') {
-          setError(data.error ?? 'You already uploaded this file.')
-          await loadData()
-          return
+      // Sequential on purpose: each file is an independent document/job, but we
+      // avoid hammering signed-URL + storage with a large parallel burst.
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]!
+        setUploadProgress({ current: i + 1, total: files.length })
+        try {
+          const result = await uploadOneFile(file)
+          if (result === 'uploaded') uploaded += 1
+          else duplicates += 1
+        } catch (e) {
+          failures.push(
+            e instanceof Error ? e.message : `Failed to upload “${file.name}”`
+          )
         }
-        if (!res.ok) throw new Error(data.error ?? 'Upload failed')
-
-        const uploadRes = await fetch(data.uploadUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': file.type },
-          body: file,
-        })
-
-        if (!uploadRes.ok) throw new Error('Failed to upload file to storage')
-
-        await loadData()
-        // The upload is done; enqueue extraction (returns immediately) and refresh
-        // so the doc shows as Queued. The pending-poll effect then tracks it to
-        // completion, and the dropzone is free for the next file right away.
-        void enqueueAndRefresh(data.document.id)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Upload failed')
-      } finally {
-        setUploading(false)
       }
+
+      await loadData()
+      setUploading(false)
+      setUploadProgress(null)
+
+      const parts: string[] = []
+      if (uploaded > 0) {
+        parts.push(`${uploaded} file${uploaded === 1 ? '' : 's'} uploaded`)
+      }
+      if (duplicates > 0) {
+        parts.push(
+          `${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped (already uploaded)`
+        )
+      }
+      if (failures.length > 0) {
+        setError(failures.length === 1 ? failures[0]! : `${failures.length} files failed: ${failures[0]}`)
+      } else {
+        setError(null)
+      }
+      if (parts.length > 0) setStatusNote(parts.join(' · '))
     },
-    [loadData, enqueueAndRefresh]
+    [uploadOneFile, loadData]
   )
 
   useEffect(() => {
@@ -247,7 +267,7 @@ export function PortalUploadDashboard() {
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
-    multiple: false,
+    multiple: true,
     disabled: uploading,
     noClick: true,
     accept: ACCEPTED_FILE_TYPES,
@@ -271,19 +291,29 @@ export function PortalUploadDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f4f6fb]">
+    <div className="flex min-h-screen flex-col bg-[#f4f6fb]">
       <header className="border-b border-slate-200/80 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-4 lg:px-8">
           <BrandLogo iconClassName="size-8 text-xs" textClassName="text-base" />
 
-          <div className="hidden flex-1 md:block">
+          <div className="hidden min-w-0 flex-1 md:block">
             <h1 className="text-lg font-semibold text-slate-900">
               Welcome back, {firstName} 👋
             </h1>
             <p className="text-sm text-slate-500">
-              Let&apos;s get your {session?.taxYear ?? new Date().getFullYear()} tax return
+              Let&apos;s get your {session?.taxYear ?? defaultTaxYear()} tax return
               completed.
             </p>
+            {session && (
+              <div className="mt-2">
+                <TaxYearSelect
+                  mode="portal"
+                  years={session.taxYears?.length ? session.taxYears : [session.taxYear]}
+                  value={session.taxYear}
+                  onYearChange={() => void loadData()}
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -336,12 +366,22 @@ export function PortalUploadDashboard() {
         <div className="border-t border-slate-100 px-6 py-3 md:hidden">
           <h1 className="text-base font-semibold text-slate-900">Welcome back, {firstName} 👋</h1>
           <p className="text-sm text-slate-500">
-            Let&apos;s get your {session?.taxYear ?? new Date().getFullYear()} tax return completed.
+            Let&apos;s get your {session?.taxYear ?? defaultTaxYear()} tax return completed.
           </p>
+          {session && (
+            <div className="mt-2">
+              <TaxYearSelect
+                mode="portal"
+                years={session.taxYears?.length ? session.taxYears : [session.taxYear]}
+                value={session.taxYear}
+                onYearChange={() => void loadData()}
+              />
+            </div>
+          )}
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-6 py-8 lg:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8 lg:px-8">
         <div className="grid gap-6 xl:grid-cols-3">
           {/* Column 1 — Upload */}
           <section className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -366,7 +406,12 @@ export function PortalUploadDashboard() {
                     <UploadCloud className="size-7 text-[#0061FF]" />
                   )}
                 </div>
-                <p className="font-medium text-slate-900">Drag and drop files here</p>
+                <p className="font-medium text-slate-900">
+                  {uploading && uploadProgress
+                    ? `Uploading ${uploadProgress.current} of ${uploadProgress.total}…`
+                    : 'Drag and drop files here'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Select multiple files at once</p>
                 <Button
                   type="button"
                   onClick={open}
@@ -386,6 +431,11 @@ export function PortalUploadDashboard() {
               </div>
             </div>
 
+            {statusNote && (
+              <p className="mt-3 text-sm text-emerald-700" role="status">
+                {statusNote}
+              </p>
+            )}
             {error && (
               <p className="mt-3 text-sm text-red-600" role="alert">
                 {error}
@@ -458,7 +508,7 @@ export function PortalUploadDashboard() {
               <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-12 text-center">
                 <FileText className="mb-3 size-8 text-slate-300" />
                 <p className="text-sm text-slate-500">No documents yet</p>
-                <p className="mt-1 text-xs text-slate-400">Upload a file to get started</p>
+                <p className="mt-1 text-xs text-slate-400">Upload one or more files to get started</p>
               </div>
             ) : (
               <ul className="space-y-2">
@@ -572,27 +622,9 @@ export function PortalUploadDashboard() {
             </div>
           </section>
         </div>
-
-        {/* Security features */}
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          {SECURITY_FEATURES.map(({ icon: Icon, iconClass, title, description }) => (
-            <div
-              key={title}
-              className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <div
-                className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${iconClass}`}
-              >
-                <Icon className="size-5" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-900">{title}</p>
-                <p className="mt-0.5 text-xs leading-relaxed text-slate-500">{description}</p>
-              </div>
-            </div>
-          ))}
-        </div>
       </main>
+
+      <SiteFooter />
     </div>
   )
 }

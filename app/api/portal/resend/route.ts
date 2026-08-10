@@ -1,7 +1,8 @@
 import { getClientByPortalToken, regenerateOtpForPortal } from '@/lib/supabase/clients'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit } from '@/lib/auth/rate-limit'
-import { PortalTokenSchema } from '@/lib/validations/client'
+import { getPortalPendingTokenFromCookies } from '@/lib/auth/client-token'
+import { PortalResendSchema } from '@/lib/validations/client'
 import { NextResponse } from 'next/server'
 
 const OTP_SEND_WINDOW_MS = 60 * 60 * 1000
@@ -13,16 +14,27 @@ function portalUrl(portalToken: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const parsed = PortalTokenSchema.safeParse(body)
+    const body = await request.json().catch(() => ({}))
+    const parsed = PortalResendSchema.safeParse(body)
 
     if (!parsed.success) {
       return NextResponse.json({ error: 'Invalid portal link', code: 'VALIDATION_ERROR' }, { status: 400 })
     }
 
-    const existing = await getClientByPortalToken(parsed.data.token)
+    const token = parsed.data.token ?? (await getPortalPendingTokenFromCookies())
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Unable to resend code. Go back and enter your email again.', code: 'NOT_FOUND' },
+        { status: 404 }
+      )
+    }
+
+    const existing = await getClientByPortalToken(token)
     if (!existing) {
-      return NextResponse.json({ error: 'Invalid portal link', code: 'NOT_FOUND' }, { status: 404 })
+      return NextResponse.json(
+        { error: 'Unable to resend code. Go back and enter your email again.', code: 'NOT_FOUND' },
+        { status: 404 }
+      )
     }
 
     const emailLimit = checkRateLimit(
@@ -37,12 +49,12 @@ export async function POST(request: Request) {
       )
     }
 
-    const { client, otp } = await regenerateOtpForPortal(existing.id, parsed.data.token)
+    const { client, otp } = await regenerateOtpForPortal(existing.id, token)
     const emailResult = await sendClientOtpEmail({
       to: client.email,
       clientName: client.name,
       otp,
-      portalUrl: portalUrl(parsed.data.token),
+      portalUrl: portalUrl(token),
     })
 
     return NextResponse.json({

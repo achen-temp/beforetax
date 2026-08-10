@@ -1,6 +1,7 @@
 import { getClientSessionFromCookies } from '@/lib/auth/client-token'
 import { getClientById } from '@/lib/supabase/clients'
-import { getCurrentTaxYear } from '@/lib/supabase/tax-years'
+import { listPickerTaxYears } from '@/lib/supabase/tax-years'
+import { resolvePortalTaxYear } from '@/lib/tax/portal-active-year'
 import { NextResponse } from 'next/server'
 
 function initialsFromName(name: string) {
@@ -24,13 +25,18 @@ export async function GET() {
       return NextResponse.json({ error: 'Client not found', code: 'NOT_FOUND' }, { status: 404 })
     }
 
-    const taxYear = await getCurrentTaxYear(session.clientId, session.firmId)
+    const taxYear = await resolvePortalTaxYear({
+      clientId: session.clientId,
+      firmId: session.firmId,
+    })
+    const years = await listPickerTaxYears(session.clientId, session.firmId)
 
     return NextResponse.json({
       name: client.name,
       email: client.email,
       initials: initialsFromName(client.name),
-      taxYear: taxYear?.year ?? new Date().getFullYear(),
+      taxYear: taxYear.year,
+      taxYears: years,
     })
   } catch (error) {
     console.error('GET /api/portal/session error:', error)
