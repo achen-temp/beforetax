@@ -1,4 +1,5 @@
 import { startPortalLoginByEmail } from '@/lib/supabase/clients'
+import { getFirmPortalBrand } from '@/lib/supabase/firms'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit, getClientIp } from '@/lib/auth/rate-limit'
 import { setPortalPendingCookie } from '@/lib/auth/client-token'
@@ -15,7 +16,8 @@ function portalUrl(portalToken: string) {
 /**
  * Email → OTP portal login. Always returns the same success payload whether or
  * not the email exists (anti-enumeration). When a client is found, sets an
- * httpOnly pending cookie used by verify/resend.
+ * httpOnly pending cookie used by verify/resend. firmName is only included when
+ * a match exists (after the user already typed their email).
  */
 export async function POST(request: Request) {
   try {
@@ -48,7 +50,6 @@ export async function POST(request: Request) {
 
     const started = await startPortalLoginByEmail(email)
 
-    // Identical public response whether or not the client exists.
     if (!started) {
       return NextResponse.json({
         success: true,
@@ -56,18 +57,21 @@ export async function POST(request: Request) {
       })
     }
 
+    const brand = await getFirmPortalBrand(started.client.firm_id)
+    const firmName = brand.firmName ?? 'your CPA firm'
     await sendClientOtpEmail({
       to: started.client.email,
       clientName: started.client.name,
       otp: started.otp,
       portalUrl: portalUrl(started.portalToken),
+      firmName,
     })
 
-    // Same JSON shape as the "not found" path — cookie is the only difference
-    // (httpOnly, not visible to JS). OTP is logged server-side in dev.
     const response = NextResponse.json({
       success: true,
       message: 'If that email is on file, we sent a verification code.',
+      firmName,
+      logoUrl: brand.logoUrl,
     })
     setPortalPendingCookie(response, started.portalToken)
     return response

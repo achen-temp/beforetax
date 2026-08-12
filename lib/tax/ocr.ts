@@ -63,7 +63,7 @@ export function formFamily(formType: string | null | undefined): string | null {
   if (t.includes('1095')) return '1095'
   if (t.includes('1099')) return '1099'
   if (t.includes('1098')) return '1098'
-  if (t.includes('1040')) return '1040'
+  if (t === 'prior_return' || t.includes('1040')) return '1040'
   if (t.includes('k-1') || t.includes('k1')) return 'k1'
   return null
 }
@@ -74,6 +74,14 @@ const FORM_ANCHORS: { family: string; patterns: RegExp[] }[] = [
   { family: 'w2', patterns: [/wage and tax statement/i, /\b1545-0008\b/, /\bW-?2\b/] },
   { family: 'ssa_1099', patterns: [/form\s*ssa-?1099/i, /social security benefit statement/i] },
   { family: '1095', patterns: [/\b1095-?A\b/i, /health insurance marketplace statement/i] },
+  {
+    family: '1040',
+    patterns: [
+      /form\s*1040\b/i,
+      /u\.?\s*s\.?\s*individual income tax return/i,
+      /\b1040-?SR\b/i,
+    ],
+  },
   {
     family: '1099',
     patterns: [/\b1099-?(?:NEC|INT|DIV|MISC|B|R|G|K|S|OID)\b/i, /\b1099\b/],

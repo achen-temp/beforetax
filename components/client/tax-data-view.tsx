@@ -4,24 +4,29 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AlertTriangle, ChevronLeft, ListChecks, Loader2 } from 'lucide-react'
-import { BrandLogo } from '@/components/brand-logo'
+import { PortalHeader } from '@/components/client/portal-header'
+import { SiteFooter } from '@/components/site-footer'
 import { TaxDataSections } from '@/components/tax/tax-data-sections'
-import { TaxYearSelect } from '@/components/tax/tax-year-select'
 import { orderedDocuments, type TaxDataView as TaxDataViewModel } from '@/lib/tax/build-tax-data'
+import type { PortalSessionView } from '@/lib/supabase/portal-session'
 
-export function TaxDataView() {
+export function TaxDataView({
+  initialSession,
+}: {
+  initialSession: PortalSessionView
+}) {
   const router = useRouter()
+  const [session, setSession] = useState(initialSession)
   const [data, setData] = useState<TaxDataViewModel | null>(null)
-  const [years, setYears] = useState<number[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const loadData = useCallback(async () => {
-    const [taxRes, yearRes] = await Promise.all([
+    const [taxRes, sessionRes] = await Promise.all([
       fetch('/api/portal/tax-data'),
-      fetch('/api/portal/tax-year'),
+      fetch('/api/portal/session'),
     ])
-    if (taxRes.status === 401 || yearRes.status === 401) {
+    if (taxRes.status === 401 || sessionRes.status === 401) {
       router.push('/portal')
       return
     }
@@ -30,13 +35,9 @@ export function TaxDataView() {
       setLoading(false)
       return
     }
-    const json = (await taxRes.json()) as TaxDataViewModel
-    setData(json)
-    if (yearRes.ok) {
-      const y = (await yearRes.json()) as { years?: number[] }
-      setYears(y.years?.length ? y.years : [json.taxYear])
-    } else {
-      setYears([json.taxYear])
+    setData((await taxRes.json()) as TaxDataViewModel)
+    if (sessionRes.ok) {
+      setSession((await sessionRes.json()) as PortalSessionView)
     }
     setLoading(false)
   }, [router])
@@ -46,48 +47,25 @@ export function TaxDataView() {
   }, [loadData])
 
   return (
-    <div className="min-h-screen bg-[#f4f6fb]">
-      <header className="border-b border-slate-200/80 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-6 px-6 py-4 lg:px-8">
-          <BrandLogo iconClassName="size-8 text-xs" textClassName="text-base" />
-          <Link
-            href="/portal/upload"
-            className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-900"
-          >
-            <ChevronLeft className="size-4" />
-            Back to documents
-          </Link>
-        </div>
-      </header>
+    <div className="flex min-h-screen flex-col bg-[#f4f6fb]">
+      <PortalHeader
+        session={session}
+        onYearChange={() => {
+          setLoading(true)
+          void loadData()
+        }}
+      />
 
-      <main className="mx-auto max-w-4xl px-6 py-8 lg:px-8">
+      <main className="mx-auto w-full max-w-4xl flex-1 px-6 py-8 lg:px-8">
+        <Link
+          href="/portal/upload"
+          className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-900"
+        >
+          <ChevronLeft className="size-4" />
+          Back to documents
+        </Link>
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Your tax data</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              {data ? (
-                <>
-                  What we&apos;ve extracted for your {data.taxYear} return, organized by the
-                  checklist your CPA needs.
-                </>
-              ) : (
-                'What we\u2019ve extracted from your documents, organized by your CPA\u2019s checklist.'
-              )}
-            </p>
-            {data && (
-              <div className="mt-3">
-                <TaxYearSelect
-                  mode="portal"
-                  years={years.length ? years : [data.taxYear]}
-                  value={data.taxYear}
-                  onYearChange={() => {
-                    setLoading(true)
-                    void loadData()
-                  }}
-                />
-              </div>
-            )}
-          </div>
+          <h1 className="text-2xl font-bold text-slate-900">Your tax data</h1>
           {data &&
             (() => {
               const firstDocId = orderedDocuments(data)[0]?.id
@@ -148,6 +126,8 @@ export function TaxDataView() {
           </div>
         )}
       </main>
+
+      <SiteFooter poweredBy maxWidthClass="max-w-4xl" />
     </div>
   )
 }

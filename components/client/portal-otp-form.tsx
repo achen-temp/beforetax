@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ChevronLeft, HelpCircle, Lock, Mail, MailCheck, Shield } from 'lucide-react'
+import { SiteFooter } from '@/components/site-footer'
 import { OtpInput } from '@/components/client/otp-input'
 import { PortalBrandPanel } from '@/components/client/portal-brand-panel'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,8 @@ export function PortalOtpForm() {
   const [email, setEmail] = useState('')
   const [clientName, setClientName] = useState<string | null>(null)
   const [clientEmail, setClientEmail] = useState<string | null>(null)
+  const [firmName, setFirmName] = useState<string | null>(null)
+  const [logoUrl, setLogoUrl] = useState<string | null>(null)
   const [otp, setOtp] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -37,6 +40,8 @@ export function PortalOtpForm() {
         if (!res.ok) throw new Error(data.error ?? 'Invalid link')
         setClientName(data.name)
         setClientEmail(data.email)
+        setFirmName(typeof data.firmName === 'string' ? data.firmName : null)
+        setLogoUrl(typeof data.logoUrl === 'string' ? data.logoUrl : null)
         setStep('otp')
       })
       .catch((e: Error) => setError(e.message))
@@ -70,6 +75,8 @@ export function PortalOtpForm() {
 
       setClientEmail(trimmed)
       setClientName(null)
+      setFirmName(typeof data.firmName === 'string' ? data.firmName : null)
+      setLogoUrl(typeof data.logoUrl === 'string' ? data.logoUrl : null)
       setOtp('')
       setStep('otp')
       setResendSeconds(RESEND_COOLDOWN)
@@ -141,6 +148,8 @@ export function PortalOtpForm() {
     setOtp('')
     setError(null)
     setClientName(null)
+    setFirmName(null)
+    setLogoUrl(null)
     setResendSeconds(0)
   }
 
@@ -148,15 +157,21 @@ export function PortalOtpForm() {
   const brandEmail = step === 'otp' ? displayEmail : undefined
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-blue-50/40 to-slate-200/60 px-4 py-8 sm:px-6 lg:px-8">
+    <div className="relative flex min-h-screen flex-col bg-gradient-to-br from-slate-100 via-blue-50/40 to-slate-200/60">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -right-20 -top-20 size-80 rounded-full bg-[#0061FF]/8 blur-3xl" />
         <div className="absolute -bottom-24 -left-24 size-96 rounded-full bg-blue-400/10 blur-3xl" />
       </div>
 
+      <div className="relative flex flex-1 items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
       <div className="relative w-full max-w-5xl overflow-hidden rounded-2xl border border-white/80 bg-white shadow-2xl shadow-slate-300/50 ring-1 ring-slate-900/5">
         <div className="grid lg:grid-cols-2">
-          <PortalBrandPanel email={brandEmail} name={clientName ?? undefined} />
+          <PortalBrandPanel
+            email={brandEmail}
+            name={clientName ?? undefined}
+            firmName={firmName}
+            logoUrl={logoUrl}
+          />
 
           <div className="flex flex-col border-t border-slate-100 bg-white px-6 py-8 sm:px-10 lg:border-t-0 lg:px-10 lg:py-10 xl:px-12">
             <div className="flex items-center justify-between">
@@ -195,8 +210,8 @@ export function PortalOtpForm() {
                   <div className="mb-8 space-y-2 text-center">
                     <h2 className="text-2xl font-bold text-slate-900">Sign in with email</h2>
                     <p className="text-sm text-slate-500">
-                      Enter the email your CPA has on file. We&apos;ll send a 6-digit verification
-                      code.
+                      Enter the email your CPA firm has on file. We&apos;ll send a 6-digit
+                      verification code.
                     </p>
                   </div>
 
@@ -315,6 +330,10 @@ export function PortalOtpForm() {
             </div>
           </div>
         </div>
+      </div>
+      </div>
+      <div className="relative">
+        <SiteFooter poweredBy />
       </div>
     </div>
   )

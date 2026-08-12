@@ -68,14 +68,15 @@ const SEGMENTATION_PROMPT = `You are splitting a scanned/photographed file that 
 
 For EVERY page, output an object with:
 - "page": the page number (integer, matching the label).
-- "form_type": the tax form on this page using the lowercase code (e.g. "w2", "1099_nec", "1099_int", "1099_div", "1099_g", "1099_sa", "1099_misc", "1099_k", "1099_r", "1099_b", "1098", "1098_t", "1095_a", "ssa_1099", "k1_1065"). Use "unknown" if the page is blank, an instructions/boilerplate page, or you cannot tell.
-- "issuer_id": the issuer's identifying number as printed — a W-2 employer EIN, or a 1099 payer's TIN/EIN (digits only, keep any dashes). null if not visible.
-- "primary_amount": the headline dollar amount that identifies this specific copy — W-2 Box 1 wages, or the main income box on a 1099. null if not visible.
+- "form_type": the tax form on this page using the lowercase code (e.g. "w2", "1099_nec", "1099_int", "1099_div", "1099_g", "1099_sa", "1099_misc", "1099_k", "1099_r", "1099_b", "1098", "1098_t", "1095_a", "ssa_1099", "k1_1065", "prior_return"). Use "unknown" if the page is blank, an instructions/boilerplate page, or you cannot tell.
+- "issuer_id": the issuer's identifying number as printed — a W-2 employer EIN, or a 1099 payer's TIN/EIN (digits only, keep any dashes). For a Form 1040 / prior_return package, use the taxpayer's SSN last-4 if visible, else null.
+- "primary_amount": the headline dollar amount that identifies this specific copy — W-2 Box 1 wages, or the main income box on a 1099. For prior_return, use AGI if visible, else null.
 - "continuation": true ONLY if this page is a continuation of the SAME form on the immediately preceding page (e.g. a second page of one long form), false otherwise.
 
 Critical rules:
 - Two W-2s from DIFFERENT employers are DIFFERENT forms (different issuer_id), even if both are W-2s.
 - W-2 Copy B / Copy C / Copy 2 (Federal vs State vs City) for the SAME employer are ONE form — same issuer_id (EIN). Set continuation false but use the SAME issuer_id on every copy so they group together. Do NOT invent a different primary_amount to split them.
+- A Form 1040 tax-return package (Form 1040 + Schedules + worksheets from the SAME return) is ONE prior_return form spanning many pages — mark schedule/continuation pages with form_type "prior_return" (or continuation true). Do NOT split each Schedule into its own segment.
 - The SAME form can span non-adjacent pages; identify each primarily by issuer_id, not by adjacency.
 - Do NOT merge different forms. Do NOT invent values — use null when unsure.
 - Return exactly one object per page, in page order.`

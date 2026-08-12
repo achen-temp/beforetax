@@ -1,4 +1,5 @@
 import { getClientByPortalToken } from '@/lib/supabase/clients'
+import { getFirmPortalBrand } from '@/lib/supabase/firms'
 import { PortalTokenSchema } from '@/lib/validations/client'
 import { NextResponse } from 'next/server'
 
@@ -24,12 +25,19 @@ export async function GET(request: Request) {
     }
 
     if (client.otp_expires_at && new Date(client.otp_expires_at) < new Date()) {
-      return NextResponse.json({ error: 'Access code expired. Ask your CPA for a new link.', code: 'EXPIRED' }, { status: 410 })
+      return NextResponse.json(
+        { error: 'Access code expired. Ask your CPA for a new link.', code: 'EXPIRED' },
+        { status: 410 }
+      )
     }
+
+    const brand = await getFirmPortalBrand(client.firm_id)
 
     return NextResponse.json({
       name: client.name,
       email: maskEmail(client.email),
+      firmName: brand.firmName,
+      logoUrl: brand.logoUrl,
     })
   } catch (error) {
     console.error('GET /api/portal error:', error)

@@ -3,37 +3,50 @@ import {
   Clock3,
   Lock,
 } from 'lucide-react'
-import { BrandLogo } from '@/components/brand-logo'
+import { PortalFirmMark } from '@/components/client/portal-firm-mark'
 import { PortalSecurityIllustration } from '@/components/client/portal-security-illustration'
-import { PLATFORM_NAME } from '@/lib/brand'
 
 export function PortalBrandPanel({
   email,
   name,
+  firmName,
+  logoUrl,
 }: {
   email?: string
   name?: string
+  firmName?: string | null
+  logoUrl?: string | null
 }) {
+  const firm = firmName?.trim()
+
   return (
     <div className="relative flex flex-col justify-between overflow-hidden bg-gradient-to-br from-slate-50 via-blue-50/40 to-slate-100 p-6 sm:p-8 lg:min-h-[640px] lg:p-10 lg:pr-8">
       <div>
-        <BrandLogo />
+        <PortalFirmMark
+          firmName={firm}
+          logoUrl={logoUrl}
+          iconClassName="size-9 text-sm"
+          textClassName="text-lg"
+        />
       </div>
 
       <div className="mt-6 space-y-6 lg:mt-0 lg:space-y-8">
         <div className="space-y-3">
           <h1 className="text-2xl font-bold leading-tight text-slate-900 lg:text-3xl xl:text-4xl">
-            Secure access to your account
+            {firm ? `Secure access to ${firm}` : 'Secure access to your account'}
           </h1>
           <p className="max-w-md text-sm leading-relaxed text-slate-600">
             {email ? (
               <>
                 We&apos;ve sent a 6-digit verification code to{' '}
                 <span className="font-medium text-[#0061FF]">{email}</span>
-                {name ? ` for ${name}` : ''}.
+                {name ? ` for ${name}` : ''}
+                {firm ? ` from ${firm}` : ''}.
               </>
             ) : (
-              'Enter the email your CPA has on file to get a verification code and upload tax documents securely.'
+              firm
+                ? `Enter the email ${firm} has on file to get a verification code and upload tax documents securely.`
+                : 'Enter the email your CPA has on file to get a verification code and upload tax documents securely.'
             )}
           </p>
         </div>
@@ -64,8 +77,6 @@ export function PortalBrandPanel({
           </li>
         </ul>
       </div>
-
-      <p className="mt-6 hidden text-xs text-slate-400 lg:mt-0 lg:block">© {PLATFORM_NAME}</p>
     </div>
   )
 }

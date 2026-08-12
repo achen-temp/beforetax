@@ -8,6 +8,7 @@ import {
   type ClientSort,
   type ClientStatus,
 } from '@/lib/supabase/clients'
+import { getFirmNameById } from '@/lib/supabase/firms'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit } from '@/lib/auth/rate-limit'
 import { CreateClientSchema } from '@/lib/validations/client'
@@ -113,11 +114,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ client, emailSent: false, otpSentAt: null })
     }
 
+    const firmName = (await getFirmNameById(firmId)) ?? 'your CPA firm'
     const emailResult = await sendClientOtpEmail({
       to: client.email,
       clientName: client.name,
       otp,
       portalUrl: portalUrl(portalToken),
+      firmName,
     })
     const otpSentAt = await markClientOtpSent(client.id, firmId)
 

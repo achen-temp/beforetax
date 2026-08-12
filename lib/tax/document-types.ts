@@ -23,6 +23,7 @@ export const DOCUMENT_TYPES = [
   'k1_1120s',
   'k1_1041',
   'ssa_1099',
+  'prior_return',
   'other',
   'unknown',
 ] as const

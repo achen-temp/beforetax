@@ -3,17 +3,20 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
+/** Top nav = tax workflow only. Firm admin (team / settings / profile) lives in the avatar menu. */
 const NAV_LINKS = [
-  { href: '/clients', label: 'Clients', match: (p: string) => p === '/clients' || p.startsWith('/clients/') },
+  {
+    href: '/clients',
+    label: 'Clients',
+    match: (p: string) => p === '/clients' || p.startsWith('/clients/'),
+  },
   {
     href: '/admin/field-catalog',
     label: 'Field catalog',
     match: (p: string) => p.startsWith('/admin/field-catalog'),
   },
-  { href: '/settings', label: 'Settings', match: (p: string) => p === '/settings' || p.startsWith('/settings/') },
 ]
 
-/** Header tabs for the CPA shell — highlights the route currently on screen. */
 export function CpaNav() {
   const pathname = usePathname()
 

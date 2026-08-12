@@ -1,6 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
-import { ChevronLeft, ListChecks } from 'lucide-react'
+import { ChevronLeft, ClipboardList, ListChecks, UserRound } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { getFirmForUser } from '@/lib/supabase/firms'
 import { getClientById } from '@/lib/supabase/clients'
@@ -67,15 +67,31 @@ export default async function ClientDetailPage({
             />
           </div>
         </div>
-        {firstDocId && (
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            href={`/clients/${id}/review/${firstDocId}${yearQs}`}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+            href={`/clients/${id}/your-info${yearQs}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
           >
-            <ListChecks className="size-4" />
-            Review all
+            <UserRound className="size-4 text-slate-500" />
+            Your info
           </Link>
-        )}
+          <Link
+            href={`/clients/${id}/checklist${yearQs}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
+          >
+            <ClipboardList className="size-4 text-slate-500" />
+            Tax prep checklist
+          </Link>
+          {firstDocId && (
+            <Link
+              href={`/clients/${id}/review/${firstDocId}${yearQs}`}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+            >
+              <ListChecks className="size-4" />
+              Review all
+            </Link>
+          )}
+        </div>
       </div>
 
       {data ? (

@@ -1,7 +1,14 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const CPA_ROUTE_PREFIXES = ['/dashboard', '/clients', '/settings', '/admin', '/account']
+const CPA_ROUTE_PREFIXES = [
+  '/dashboard',
+  '/clients',
+  '/settings',
+  '/team',
+  '/admin',
+  '/account',
+]
 
 function isCpaRoute(pathname: string) {
   return CPA_ROUTE_PREFIXES.some(
@@ -39,7 +46,6 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl
   const isProtectedRoute = isCpaRoute(pathname)
-  const isAuthRoute = pathname === '/login' || pathname === '/signup'
 
   if (!user && isProtectedRoute) {
     const url = request.nextUrl.clone()
@@ -48,7 +54,9 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  if (user && isAuthRoute) {
+  // Logged-in users shouldn't sit on login/signup, but invite accept must stay open
+  // (e.g. wrong account signed in — they can still read the page).
+  if (user && (pathname === '/login' || pathname === '/signup')) {
     const url = request.nextUrl.clone()
     url.pathname = '/clients'
     url.search = ''
@@ -66,11 +74,15 @@ export const config = {
     '/clients/:path*',
     '/settings',
     '/settings/:path*',
+    '/team',
+    '/team/:path*',
     '/admin',
     '/admin/:path*',
     '/account',
     '/account/:path*',
     '/login',
     '/signup',
+    '/invite',
+    '/invite/:path*',
   ],
 }

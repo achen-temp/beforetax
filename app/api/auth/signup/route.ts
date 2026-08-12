@@ -1,11 +1,21 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { mapSignupError } from '@/lib/auth/errors'
 import { checkRateLimit, getClientIp } from '@/lib/auth/rate-limit'
+import { sendCpaVerificationEmail } from '@/lib/email/resend'
 import { SignupApiSchema } from '@/lib/validations/auth'
 import { NextResponse } from 'next/server'
 
 const SIGNUP_LIMIT = 5
 const SIGNUP_WINDOW_MS = 60 * 60 * 1000 // 1 hour
+
+function appBaseUrl() {
+  return process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+}
+
+/** Skip email verification only when explicitly opted in (local/dev convenience). */
+function shouldSkipEmailConfirm() {
+  return process.env.CPA_SKIP_EMAIL_CONFIRM === 'true'
+}
 
 export async function POST(request: Request) {
   let authUserId: string | null = null
@@ -32,7 +42,7 @@ export async function POST(request: Request) {
       )
     }
 
-    const { email, password, firmName } = result.data
+    const { email, password, firmName, firstName, lastName } = result.data
 
     const emailLimit = checkRateLimit(
       `signup:email:${email.toLowerCase()}`,
@@ -48,12 +58,12 @@ export async function POST(request: Request) {
     }
 
     const admin = createAdminClient()
+    const skipConfirm = shouldSkipEmailConfirm()
 
-    // Dev: email_confirm skips Supabase confirmation email (no rate limit, no redirect issues)
     const { data: authData, error: authError } = await admin.auth.admin.createUser({
       email,
       password,
-      email_confirm: true,
+      email_confirm: skipConfirm,
     })
 
     if (authError) {
@@ -77,6 +87,8 @@ export async function POST(request: Request) {
       p_user_id: authUserId,
       p_firm_name: firmName,
       p_email: email,
+      p_first_name: firstName,
+      p_last_name: lastName,
     })
 
     if (rpcError || !firmId) {
@@ -89,14 +101,72 @@ export async function POST(request: Request) {
       )
     }
 
-    return NextResponse.json({ success: true })
+    if (skipConfirm) {
+      return NextResponse.json({
+        success: true,
+        requiresEmailConfirmation: false,
+      })
+    }
+
+    const redirectTo = `${appBaseUrl()}/auth/callback?redirect=/clients`
+    const { data: linkData, error: linkError } = await admin.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+      options: { redirectTo },
+    })
+
+    if (linkError || !linkData.properties?.action_link) {
+      console.error('Signup generateLink error:', linkError)
+      await admin.auth.admin.deleteUser(authUserId)
+      authUserId = null
+      // Deleting the auth user cascades cpa_users but leaves an orphan firm.
+      await admin.from('cpa_firms').delete().eq('id', firmId)
+      return NextResponse.json(
+        { error: 'Unable to send verification email. Please try again.', code: 'SIGNUP_FAILED' },
+        { status: 500 }
+      )
+    }
+
+    const confirmUrl = linkData.properties.action_link
+
+    try {
+      const { devMode } = await sendCpaVerificationEmail({
+        to: email,
+        firmName,
+        confirmUrl,
+      })
+
+      return NextResponse.json({
+        success: true,
+        requiresEmailConfirmation: true,
+        ...(devMode ? { devConfirmUrl: confirmUrl } : {}),
+      })
+    } catch (emailError) {
+      console.error('Signup verification email error:', emailError)
+      await admin.auth.admin.deleteUser(authUserId)
+      authUserId = null
+      await admin.from('cpa_firms').delete().eq('id', firmId)
+      return NextResponse.json(
+        { error: 'Unable to send verification email. Please try again.', code: 'SIGNUP_FAILED' },
+        { status: 500 }
+      )
+    }
   } catch (error) {
     console.error('POST /api/auth/signup error:', error)
 
     if (authUserId) {
       try {
         const admin = createAdminClient()
+        // Look up firm before deleting the user (cpa_users cascades away).
+        const { data: profile } = await admin
+          .from('cpa_users')
+          .select('firm_id')
+          .eq('id', authUserId)
+          .maybeSingle()
         await admin.auth.admin.deleteUser(authUserId)
+        if (profile?.firm_id) {
+          await admin.from('cpa_firms').delete().eq('id', profile.firm_id)
+        }
       } catch (cleanupError) {
         console.error('Signup cleanup error:', cleanupError)
       }

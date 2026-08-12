@@ -87,6 +87,7 @@ export function buildClassificationPrompt(): string {
 }
 Rules:
 - Base form_type on the form title, official box layout, and issuer. If it is not a recognizable tax form, return "unknown".
+- Use "prior_return" for a Form 1040 / U.S. Individual Income Tax Return package (or tax-software printout of a full return), including multi-page returns with Schedules. Do NOT classify a standalone W-2, 1099, or 1098 as prior_return.
 - recipient_tin_last4: last 4 digits of the recipient SSN/TIN only (whether the form is masked or shows a full number).
 - printed_tax_year: return ONLY the tax year explicitly printed on the form. Do NOT infer it from statement dates, mailing dates, or "for year" text on cover pages. If not explicitly printed, return null.
 - document_quality: "high" = crisp digital/clean scan; "medium" = readable photo/scan with noise; "low" = blurry, skewed, shadowed, or partially cut off.

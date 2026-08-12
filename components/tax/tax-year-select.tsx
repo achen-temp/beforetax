@@ -15,12 +15,15 @@ export function TaxYearSelect({
   pathname,
   /** Portal client pages: re-fetch after the cookie is set. */
   onYearChange,
+  /** When false, only the <select> is shown (parent supplies its own label). */
+  showLabel = true,
 }: {
   years: number[]
   value: number
   mode: 'cpa' | 'portal'
   pathname?: string
   onYearChange?: () => void
+  showLabel?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -47,22 +50,28 @@ export function TaxYearSelect({
     })
   }
 
+  const select = (
+    <select
+      value={value}
+      disabled={pending || options.length === 0}
+      onChange={(e) => void onChange(Number(e.target.value))}
+      className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-900 shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
+      aria-label="Tax year"
+    >
+      {options.map((y) => (
+        <option key={y} value={y}>
+          {y}
+        </option>
+      ))}
+    </select>
+  )
+
+  if (!showLabel) return select
+
   return (
     <label className="inline-flex items-center gap-2 text-sm text-slate-600">
       <span className="font-medium text-slate-500">Tax year</span>
-      <select
-        value={value}
-        disabled={pending || options.length === 0}
-        onChange={(e) => void onChange(Number(e.target.value))}
-        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-900 shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
-        aria-label="Tax year"
-      >
-        {options.map((y) => (
-          <option key={y} value={y}>
-            {y}
-          </option>
-        ))}
-      </select>
+      {select}
     </label>
   )
 }

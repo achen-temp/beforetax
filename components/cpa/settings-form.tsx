@@ -72,8 +72,8 @@ export function SettingsForm({ settings }: { settings: FirmSettings }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Document uploads</CardTitle>
-        <CardDescription>
+        <CardTitle>Document Uploads Settings</CardTitle>
+        <CardDescription hidden>
           How the client portal handles files your clients upload.
         </CardDescription>
       </CardHeader>
@@ -82,9 +82,7 @@ export function SettingsForm({ settings }: { settings: FirmSettings }) {
           <div className="space-y-1">
             <p className="text-sm font-medium">Skip duplicate files</p>
             <p className="text-sm text-muted-foreground">
-              When on, a client re-uploading the exact same file (identical content)
-              in a tax year is blocked, keeping duplicates out of extraction. Turn
-              off to allow the same file to be uploaded more than once.
+              When on, re-uploading exact same file is not allowed.
             </p>
           </div>
           <Toggle

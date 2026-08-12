@@ -50,8 +50,16 @@ export const passwordSchema = z
   .refine(hasLowercase, 'Password must contain a lowercase letter')
   .refine(hasSpecialCharacter, 'Password must contain a special character')
 
+export const namePartSchema = z
+  .string()
+  .trim()
+  .min(1, 'Required')
+  .max(50, 'Too long')
+
 export const SignupApiSchema = z.object({
   firmName: z.string().min(1, 'Firm name is required').max(100),
+  firstName: namePartSchema,
+  lastName: namePartSchema,
   email: z.string().email('Please enter a valid email address'),
   password: passwordSchema,
 })
@@ -64,3 +72,20 @@ export const SignupFormSchema = SignupApiSchema.extend({
 })
 
 export type SignupFormValues = z.infer<typeof SignupFormSchema>
+
+export const InviteAcceptSchema = z
+  .object({
+    firstName: namePartSchema,
+    lastName: namePartSchema,
+    password: passwordSchema,
+    confirmPassword: z.string().min(1, 'Please confirm your password'),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  })
+
+export const TeamInviteSchema = z.object({
+  email: z.string().email('Please enter a valid email address'),
+  role: z.enum(['staff']),
+})

@@ -23,6 +23,7 @@ const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   k1_1120s: 'Schedule K-1 (Form 1120-S) — S-Corporation',
   k1_1041: 'Schedule K-1 (Form 1041) — Estate/Trust',
   ssa_1099: 'SSA-1099 — Social Security Benefits',
+  prior_return: "Prior-year tax return — Form 1040 (personal info)",
   other: 'Other document',
   unknown: 'Unrecognized document',
 }

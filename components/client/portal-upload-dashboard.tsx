@@ -5,22 +5,15 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDropzone } from 'react-dropzone'
 import {
-  Briefcase,
-  ChevronDown,
   ChevronRight,
   Copy,
-  DollarSign,
   FileSpreadsheet,
   FileText,
-  HelpCircle,
-  Home,
   Loader2,
   Lock,
-  MessageSquare,
   UploadCloud,
-  Users,
 } from 'lucide-react'
-import { BrandLogo } from '@/components/brand-logo'
+import { PortalHeader } from '@/components/client/portal-header'
 import { SiteFooter } from '@/components/site-footer'
 import { Button } from '@/components/ui/button'
 import {
@@ -31,8 +24,7 @@ import {
   sha256Hex,
   validateFile,
 } from '@/lib/files'
-import { defaultTaxYear } from '@/lib/tax/default-tax-year'
-import { TaxYearSelect } from '@/components/tax/tax-year-select'
+import type { PortalSessionView } from '@/lib/supabase/portal-session'
 
 interface DocumentRow {
   id: string
@@ -42,13 +34,7 @@ interface DocumentRow {
   created_at: string
 }
 
-interface SessionInfo {
-  name: string
-  email: string
-  initials: string
-  taxYear: number
-  taxYears: number[]
-}
+type SessionInfo = PortalSessionView
 
 function formatRelativeTime(iso: string) {
   const diff = Date.now() - new Date(iso).getTime()
@@ -82,12 +68,14 @@ function isPending(status: string): boolean {
   return status === 'queued' || status === 'processing'
 }
 
-export function PortalUploadDashboard() {
+export function PortalUploadDashboard({
+  initialSession,
+}: {
+  initialSession: PortalSessionView
+}) {
   const router = useRouter()
-  const [session, setSession] = useState<SessionInfo | null>(null)
+  const [session, setSession] = useState<SessionInfo>(initialSession)
   const [documents, setDocuments] = useState<DocumentRow[]>([])
-  const [showAllDocs, setShowAllDocs] = useState(false)
-  const [profileOpen, setProfileOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   /** When set, shows “Uploading 2 of 5…” during a multi-file batch. */
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(
@@ -273,9 +261,7 @@ export function PortalUploadDashboard() {
     accept: ACCEPTED_FILE_TYPES,
   })
 
-  const firstName = session?.name.split(' ')[0] ?? 'there'
-  const visibleDocs = showAllDocs ? documents : documents.slice(0, 5)
-  const intakeEmail = session?.email ?? ''
+  const intakeEmail = session.documentIntakeEmail?.trim() || null
 
   async function handleCopyEmail() {
     if (!intakeEmail) return
@@ -284,105 +270,12 @@ export function PortalUploadDashboard() {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  async function handleSignOut() {
-    await fetch('/api/portal/logout', { method: 'POST' })
-    router.push('/portal')
-    router.refresh()
-  }
-
   return (
     <div className="flex min-h-screen flex-col bg-[#f4f6fb]">
-      <header className="border-b border-slate-200/80 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-4 lg:px-8">
-          <BrandLogo iconClassName="size-8 text-xs" textClassName="text-base" />
-
-          <div className="hidden min-w-0 flex-1 md:block">
-            <h1 className="text-lg font-semibold text-slate-900">
-              Welcome back, {firstName} 👋
-            </h1>
-            <p className="text-sm text-slate-500">
-              Let&apos;s get your {session?.taxYear ?? defaultTaxYear()} tax return
-              completed.
-            </p>
-            {session && (
-              <div className="mt-2">
-                <TaxYearSelect
-                  mode="portal"
-                  years={session.taxYears?.length ? session.taxYears : [session.taxYear]}
-                  value={session.taxYear}
-                  onYearChange={() => void loadData()}
-                />
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              className="flex size-9 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50"
-              aria-label="Help"
-            >
-              <HelpCircle className="size-4" />
-            </button>
-
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setProfileOpen((o) => !o)}
-                className="flex items-center gap-2 rounded-full border border-slate-200 bg-white py-1 pl-1 pr-2 hover:bg-slate-50"
-              >
-                <span className="flex size-8 items-center justify-center rounded-full bg-[#0061FF] text-xs font-semibold text-white">
-                  {session?.initials ?? '••'}
-                </span>
-                <ChevronDown className="size-4 text-slate-400" />
-              </button>
-
-              {profileOpen && (
-                <div className="absolute right-0 z-20 mt-2 w-48 rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
-                  <div className="border-b border-slate-100 px-4 py-2">
-                    <p className="truncate text-sm font-medium text-slate-900">{session?.name}</p>
-                    <p className="truncate text-xs text-slate-500">{session?.email}</p>
-                  </div>
-                  <Link
-                    href="/portal/tax-data"
-                    className="flex items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                  >
-                    <FileSpreadsheet className="size-4 text-slate-400" />
-                    Tax data
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={handleSignOut}
-                    className="w-full border-t border-slate-100 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-                  >
-                    Sign out
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="border-t border-slate-100 px-6 py-3 md:hidden">
-          <h1 className="text-base font-semibold text-slate-900">Welcome back, {firstName} 👋</h1>
-          <p className="text-sm text-slate-500">
-            Let&apos;s get your {session?.taxYear ?? defaultTaxYear()} tax return completed.
-          </p>
-          {session && (
-            <div className="mt-2">
-              <TaxYearSelect
-                mode="portal"
-                years={session.taxYears?.length ? session.taxYears : [session.taxYear]}
-                value={session.taxYear}
-                onYearChange={() => void loadData()}
-              />
-            </div>
-          )}
-        </div>
-      </header>
+      <PortalHeader session={session} onYearChange={() => void loadData()} />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8 lg:px-8">
-        <div className="grid gap-6 xl:grid-cols-3">
+        <div className="grid gap-6 lg:grid-cols-2">
           {/* Column 1 — Upload */}
           <section className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="mb-5 text-base font-semibold text-slate-900">
@@ -470,17 +363,26 @@ export function PortalUploadDashboard() {
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                 Email documents to
               </p>
-              <div className="mt-2 flex items-center gap-2">
-                <p className="flex-1 truncate text-sm font-medium text-slate-900">{intakeEmail}</p>
-                <button
-                  type="button"
-                  onClick={handleCopyEmail}
-                  className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-                  aria-label="Copy email"
-                >
-                  <Copy className="size-4" />
-                </button>
-              </div>
+              {intakeEmail ? (
+                <div className="mt-2 flex items-center gap-2">
+                  <p className="flex-1 truncate text-sm font-medium text-slate-900">
+                    {intakeEmail}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleCopyEmail}
+                    className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                    aria-label="Copy email"
+                  >
+                    <Copy className="size-4" />
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-500">
+                  Your tax preparer hasn&apos;t set an intake email yet. Upload
+                  files here instead.
+                </p>
+              )}
               {copied && <p className="mt-1 text-xs text-emerald-600">Copied!</p>}
             </div>
 
@@ -493,194 +395,73 @@ export function PortalUploadDashboard() {
             </div>
           </section>
 
-          {/* Column 2 — Documents received */}
-          <section className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="mb-5 flex items-center justify-between">
+          {/* Column 2 — Documents received (list scrolls inside the card) */}
+          <section className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:relative lg:overflow-hidden">
+            <div className="mb-5 flex shrink-0 items-center justify-between gap-3">
               <h2 className="text-base font-semibold text-slate-900">
                 <span className="text-[#0061FF]">2.</span> Documents received
+                <span className="ml-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-[#0061FF]">
+                  {documents.length} {documents.length === 1 ? 'file' : 'files'}
+                </span>
               </h2>
-              <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-[#0061FF]">
-                {documents.length} {documents.length === 1 ? 'file' : 'files'}
-              </span>
+              <Link
+                href="/portal/tax-data"
+                className="inline-flex shrink-0 items-center gap-1.5 pr-1 text-sm font-medium text-[#0061FF] underline underline-offset-2 hover:text-[#0052d6]"
+              >
+                <FileSpreadsheet className="size-3.5" />
+                Tax data
+              </Link>
             </div>
 
-            {documents.length === 0 ? (
-              <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-12 text-center">
-                <FileText className="mb-3 size-8 text-slate-300" />
-                <p className="text-sm text-slate-500">No documents yet</p>
-                <p className="mt-1 text-xs text-slate-400">Upload one or more files to get started</p>
-              </div>
-            ) : (
-              <ul className="space-y-2">
-                {visibleDocs.map((doc) => {
-                  const status = statusLabel(doc.extraction_status)
-                  return (
-                    <li
-                      key={doc.id}
-                      className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/50 px-3 py-3"
-                    >
-                      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-red-50">
-                        <FileText className="size-4 text-red-500" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-slate-900">
-                          {doc.file_name}
-                        </p>
-                        <p className="text-xs text-slate-400">
-                          Uploaded {formatRelativeTime(doc.created_at)}
-                        </p>
-                      </div>
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${status.className}`}
-                      >
-                        {status.spinning && (
-                          <Loader2 className="size-3 animate-spin" />
-                        )}
-                        {status.text}
-                      </span>
-                      <ChevronRight className="size-4 shrink-0 text-slate-300" />
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-
-            {documents.length > 5 && (
-              <button
-                type="button"
-                onClick={() => setShowAllDocs((v) => !v)}
-                className="mt-4 text-sm font-medium text-[#0061FF] hover:underline"
-              >
-                {showAllDocs ? 'Show less' : `Show all files (${documents.length})`}
-              </button>
-            )}
-          </section>
-
-          {/* Column 3 — Tax summary */}
-          <section className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="mb-1 text-base font-semibold text-slate-900">
-              <span className="text-[#0061FF]">3.</span> Tax summary
-            </h2>
-            <p className="mb-5 text-sm text-slate-500">
-              Here&apos;s what we&apos;ve found and what we may need.
-            </p>
-
-            <ul className="space-y-2">
-              <TaxCategoryRow
-                icon={DollarSign}
-                iconClass="bg-emerald-50 text-emerald-600"
-                label="Income"
-                status={documents.length > 0 ? 'complete' : 'pending'}
-              />
-              <TaxCategoryRow
-                icon={Briefcase}
-                iconClass="bg-amber-50 text-amber-600"
-                label="Investments"
-                status="attention"
-                detail="We may need: Brokerage statement showing cost basis (1099-B)"
-              />
-              <TaxCategoryRow
-                icon={Home}
-                iconClass="bg-emerald-50 text-emerald-600"
-                label="Home"
-                status="pending"
-              />
-              <TaxCategoryRow
-                icon={FileText}
-                iconClass="bg-violet-50 text-violet-600"
-                label="Deductions"
-                status="pending"
-              />
-              <TaxCategoryRow
-                icon={Users}
-                iconClass="bg-blue-50 text-blue-600"
-                label="Family"
-                status="pending"
-              />
-            </ul>
-
-            <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#0061FF]/10">
-                  <MessageSquare className="size-4 text-[#0061FF]" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-slate-900">Questions for your tax pro?</p>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    Send a message to your CPA firm anytime.
+            <div className="min-h-0 max-h-[min(24rem,55vh)] overflow-y-auto overscroll-contain lg:absolute lg:inset-x-6 lg:bottom-6 lg:top-[4.25rem] lg:max-h-none">
+              {documents.length === 0 ? (
+                <div className="flex h-full min-h-[12rem] flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-12 text-center">
+                  <FileText className="mb-3 size-8 text-slate-300" />
+                  <p className="text-sm text-slate-500">No documents yet</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Upload one or more files to get started
                   </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-3 w-full rounded-lg border-slate-200"
-                    disabled
-                  >
-                    Send a Message
-                  </Button>
                 </div>
-              </div>
+              ) : (
+                <ul className="space-y-2 pr-1">
+                  {documents.map((doc) => {
+                    const status = statusLabel(doc.extraction_status)
+                    return (
+                      <li
+                        key={doc.id}
+                        className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/50 px-3 py-3"
+                      >
+                        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-red-50">
+                          <FileText className="size-4 text-red-500" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-slate-900">
+                            {doc.file_name}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            Uploaded {formatRelativeTime(doc.created_at)}
+                          </p>
+                        </div>
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${status.className}`}
+                        >
+                          {status.spinning && (
+                            <Loader2 className="size-3 animate-spin" />
+                          )}
+                          {status.text}
+                        </span>
+                        <ChevronRight className="size-4 shrink-0 text-slate-300" />
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
           </section>
         </div>
       </main>
 
-      <SiteFooter />
+      <SiteFooter poweredBy />
     </div>
-  )
-}
-
-function TaxCategoryRow({
-  icon: Icon,
-  iconClass,
-  label,
-  status,
-  detail,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  iconClass: string
-  label: string
-  status: 'complete' | 'attention' | 'pending'
-  detail?: string
-}) {
-  const [expanded, setExpanded] = useState(status === 'attention')
-
-  const badge =
-    status === 'complete'
-      ? { text: 'Complete', className: 'bg-emerald-50 text-emerald-700' }
-      : status === 'attention'
-        ? { text: 'Needs Attention', className: 'bg-amber-50 text-amber-700' }
-        : { text: 'Pending', className: 'bg-slate-100 text-slate-500' }
-
-  return (
-    <li className="rounded-xl border border-slate-100 bg-slate-50/40">
-      <button
-        type="button"
-        onClick={() => detail && setExpanded((v) => !v)}
-        className="flex w-full items-center gap-3 px-3 py-3 text-left"
-      >
-        <div
-          className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${iconClass}`}
-        >
-          <Icon className="size-4" />
-        </div>
-        <span className="flex-1 text-sm font-medium text-slate-900">{label}</span>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
-          {badge.text}
-        </span>
-        {detail && (
-          <ChevronDown
-            className={`size-4 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
-          />
-        )}
-      </button>
-      {detail && expanded && (
-        <div className="border-t border-amber-100 bg-amber-50/60 px-3 py-3 text-xs text-amber-900">
-          {detail}
-          <button type="button" className="ml-1 font-medium text-[#0061FF] hover:underline">
-            Learn more
-          </button>
-        </div>
-      )}
-    </li>
   )
 }

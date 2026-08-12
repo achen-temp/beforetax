@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { getFirmId } from '@/lib/supabase/auth'
+import { getFirmNameById } from '@/lib/supabase/firms'
 import { markClientOtpSent, refreshClientOtp } from '@/lib/supabase/clients'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit } from '@/lib/auth/rate-limit'
@@ -41,11 +42,13 @@ export async function POST(
       )
     }
 
+    const firmName = (await getFirmNameById(firmId)) ?? 'your CPA firm'
     const emailResult = await sendClientOtpEmail({
       to: client.email,
       clientName: client.name,
       otp,
       portalUrl: portalUrl(portalToken),
+      firmName,
     })
     const otpSentAt = await markClientOtpSent(client.id, firmId)
 
@@ -57,6 +60,9 @@ export async function POST(
     })
   } catch (error) {
     console.error('POST /api/clients/[id]/send-otp error:', error)
-    return NextResponse.json({ error: 'Unable to send OTP. Please try again.', code: 'SERVER_ERROR' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Unable to send OTP. Please try again.', code: 'SERVER_ERROR' },
+      { status: 500 }
+    )
   }
 }

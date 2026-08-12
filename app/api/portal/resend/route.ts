@@ -1,4 +1,5 @@
 import { getClientByPortalToken, regenerateOtpForPortal } from '@/lib/supabase/clients'
+import { getFirmNameById } from '@/lib/supabase/firms'
 import { sendClientOtpEmail } from '@/lib/email/resend'
 import { checkRateLimit } from '@/lib/auth/rate-limit'
 import { getPortalPendingTokenFromCookies } from '@/lib/auth/client-token'
@@ -50,16 +51,19 @@ export async function POST(request: Request) {
     }
 
     const { client, otp } = await regenerateOtpForPortal(existing.id, token)
+    const firmName = (await getFirmNameById(client.firm_id)) ?? 'your CPA firm'
     const emailResult = await sendClientOtpEmail({
       to: client.email,
       clientName: client.name,
       otp,
       portalUrl: portalUrl(token),
+      firmName,
     })
 
     return NextResponse.json({
       success: true,
       emailSent: !emailResult.devMode,
+      firmName,
       ...(emailResult.devMode ? { devOtp: otp } : {}),
     })
   } catch (error) {

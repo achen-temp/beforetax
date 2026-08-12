@@ -35,6 +35,20 @@ export interface CpaUser {
   firm_id: string
   email: string
   role: CpaUserRole
+  first_name: string | null
+  last_name: string | null
+  created_at: string
+}
+
+export interface FirmInvite {
+  id: string
+  firm_id: string
+  email: string
+  role: CpaUserRole
+  token: string
+  invited_by: string
+  expires_at: string
+  accepted_at: string | null
   created_at: string
 }
 
@@ -66,8 +80,19 @@ export interface TaxYear {
   firm_id: string
   year: number
   status: TaxYearStatus
+  /** DocumentType extraction grouping — not the CPA intake "what to bring" list. */
   checklist: TaxYearChecklistItem[]
+  /** CPA tax-prep intake list for this year (see lib/tax/intake-checklist). */
+  intake_checklist?: IntakeChecklistItemJson[]
   created_at: string
+}
+
+/** Loose JSON shape stored on tax_years.intake_checklist */
+export interface IntakeChecklistItemJson {
+  id: string
+  categoryId: string
+  label: string
+  status: string
 }
 
 /**
@@ -181,9 +206,27 @@ export interface Database {
           firm_id: string
           email: string
           role?: CpaUserRole
+          first_name?: string | null
+          last_name?: string | null
           created_at?: string
         }
         Update: Partial<CpaUser>
+        Relationships: []
+      }
+      firm_invites: {
+        Row: FirmInvite
+        Insert: {
+          firm_id: string
+          email: string
+          token: string
+          invited_by: string
+          expires_at: string
+          id?: string
+          role?: CpaUserRole
+          accepted_at?: string | null
+          created_at?: string
+        }
+        Update: Partial<FirmInvite>
         Relationships: []
       }
       clients: {

@@ -22,11 +22,17 @@ import {
 export function SignupForm() {
   const router = useRouter()
   const [firmName, setFirmName] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [checkEmail, setCheckEmail] = useState<{
+    email: string
+    devConfirmUrl?: string
+  } | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -34,6 +40,8 @@ export function SignupForm() {
 
     const validation = SignupFormSchema.safeParse({
       firmName,
+      firstName,
+      lastName,
       email,
       password,
       confirmPassword,
@@ -52,15 +60,29 @@ export function SignupForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           firmName: validation.data.firmName,
+          firstName: validation.data.firstName,
+          lastName: validation.data.lastName,
           email: validation.data.email,
           password: validation.data.password,
         }),
       })
 
-      const data = await res.json()
+      const data = (await res.json()) as {
+        error?: string
+        requiresEmailConfirmation?: boolean
+        devConfirmUrl?: string
+      }
 
       if (!res.ok) {
         setError(data.error ?? 'Unable to create account. Please try again.')
+        return
+      }
+
+      if (data.requiresEmailConfirmation) {
+        setCheckEmail({
+          email: validation.data.email,
+          devConfirmUrl: data.devConfirmUrl,
+        })
         return
       }
 
@@ -84,12 +106,51 @@ export function SignupForm() {
     }
   }
 
+  if (checkEmail) {
+    return (
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle>Check your email</CardTitle>
+          <CardDescription>
+            We sent a verification link to <strong>{checkEmail.email}</strong>. Confirm
+            your email to finish setting up your firm, then sign in.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {checkEmail.devConfirmUrl && (
+            <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Dev mode (no Resend key):{' '}
+              <a
+                href={checkEmail.devConfirmUrl}
+                className="font-medium underline underline-offset-2"
+              >
+                open verification link
+              </a>
+            </p>
+          )}
+        </CardContent>
+        <CardFooter>
+          <p className="text-sm text-muted-foreground">
+            Already verified?{' '}
+            <Link
+              href="/login?message=confirm_email"
+              className="underline-offset-4 hover:underline"
+            >
+              Sign in
+            </Link>
+          </p>
+        </CardFooter>
+      </Card>
+    )
+  }
+
   return (
     <Card className="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Create CPA Account</CardTitle>
         <CardDescription>
-          Register your firm to start collecting tax documents.
+          Register your firm to start collecting tax documents. You’ll need to verify
+          your email before signing in.
         </CardDescription>
       </CardHeader>
       <form onSubmit={handleSubmit}>
@@ -110,6 +171,32 @@ export function SignupForm() {
               value={firmName}
               onChange={(e) => setFirmName(e.target.value)}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="firstName">First name</Label>
+              <Input
+                id="firstName"
+                type="text"
+                autoComplete="given-name"
+                required
+                disabled={loading}
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="lastName">Last name</Label>
+              <Input
+                id="lastName"
+                type="text"
+                autoComplete="family-name"
+                required
+                disabled={loading}
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+              />
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
@@ -161,6 +248,10 @@ export function SignupForm() {
             <Link href="/login" className="underline-offset-4 hover:underline">
               Sign in
             </Link>
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Joining an existing firm? Ask your firm owner for an invite — don’t create a
+            new firm here.
           </p>
         </CardFooter>
       </form>

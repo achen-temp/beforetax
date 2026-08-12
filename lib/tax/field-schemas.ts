@@ -706,6 +706,132 @@ export const FIELD_SCHEMAS: Partial<Record<DocumentType, FormSchema>> = {
       },
     ],
   },
+
+  /**
+   * Prior-year Form 1040 package (or software printout). Narrow extract only:
+   * household / identity for prefilling client info — NOT income/deduction boxes.
+   */
+  prior_return: {
+    formType: 'prior_return',
+    label: "Prior-year tax return — Form 1040 (personal info)",
+    notes: [
+      'This document is a PRIOR-YEAR Form 1040 / U.S. Individual Income Tax Return (or a tax-software printout of one), often many pages with Schedules.',
+      'Extract ONLY personal/household identity from Form 1040 page 1 (and refund direct-deposit lines if present on page 2). Do NOT extract wages, AGI line amounts beyond what is listed below, Schedule C/E/D details, credits, or other tax computation boxes.',
+      'If the upload is clearly a W-2, 1099, or other information return (not a 1040 return package), set form_type_mismatch true.',
+      'filing_status: map the checked filing-status box to one of: "single", "mfj", "mfs", "hoh", "qw". If unclear, return the printed label as text.',
+      'SSNs: transcribe EXACTLY as printed (full or masked). Never invent missing digits.',
+      'dependents: one object per dependent listed on Form 1040; return [] if none.',
+      'Direct-deposit fields are only for a REFUND routing/account printed on the return; leave null if blank or if the return shows amount owed with no deposit info.',
+    ],
+    fields: [
+      {
+        key: 'tax_year',
+        label: 'Tax year of this return',
+        type: 'text',
+        hint: 'the 4-digit tax year the Form 1040 is for (e.g. "2024"), as a string',
+      },
+      {
+        key: 'filing_status',
+        label: 'Filing status',
+        type: 'text',
+        hint: 'one of: single, mfj, mfs, hoh, qw — from the checked box on Form 1040',
+      },
+      { key: 'taxpayer_name', label: 'Taxpayer name', type: 'text' },
+      {
+        key: 'taxpayer_ssn',
+        label: 'Taxpayer SSN',
+        type: 'text',
+        hint:
+          'transcribe EXACTLY as printed: full SSN if unmasked (keep dashes); if masked (X, *, •), return the masked form with only the visible last 4. Never invent missing digits.',
+      },
+      {
+        key: 'taxpayer_dob',
+        label: 'Taxpayer date of birth',
+        type: 'date',
+        hint: 'only if printed on the return package; otherwise null',
+      },
+      { key: 'spouse_name', label: 'Spouse name', type: 'text' },
+      {
+        key: 'spouse_ssn',
+        label: 'Spouse SSN',
+        type: 'text',
+        hint:
+          'transcribe EXACTLY as printed; null if single / no spouse. Never invent missing digits.',
+      },
+      {
+        key: 'spouse_dob',
+        label: 'Spouse date of birth',
+        type: 'date',
+        hint: 'only if printed; otherwise null',
+      },
+      { key: 'address_street', label: 'Home address (street)', type: 'text' },
+      { key: 'address_city', label: 'City', type: 'text' },
+      {
+        key: 'address_state',
+        label: 'State',
+        type: 'text',
+        inputType: 'state',
+        hint: '2-letter US state code',
+      },
+      { key: 'address_zip', label: 'ZIP code', type: 'text' },
+      {
+        key: 'phone',
+        label: 'Phone',
+        type: 'text',
+        hint: 'only if printed on the return; otherwise null',
+      },
+      {
+        key: 'dependents',
+        label: 'Dependents (one entry per dependent)',
+        type: 'group',
+        repeating: true,
+        fields: [
+          { key: 'name', label: 'Dependent name', type: 'text' },
+          {
+            key: 'ssn',
+            label: 'Dependent SSN',
+            type: 'text',
+            hint: 'exactly as printed; never invent digits',
+          },
+          {
+            key: 'relationship',
+            label: 'Relationship to taxpayer',
+            type: 'text',
+          },
+          {
+            key: 'dob',
+            label: 'Date of birth',
+            type: 'date',
+            hint: 'null if not printed',
+          },
+        ],
+      },
+      {
+        key: 'refund_routing_number',
+        label: 'Refund direct deposit — routing number',
+        type: 'text',
+        hint: 'Form 1040 refund direct-deposit routing number if printed; else null',
+      },
+      {
+        key: 'refund_account_number',
+        label: 'Refund direct deposit — account number',
+        type: 'text',
+        hint: 'as printed (may be full or partial); else null',
+      },
+      {
+        key: 'refund_account_type',
+        label: 'Refund direct deposit — account type',
+        type: 'text',
+        hint: 'checking or savings if indicated; else null',
+      },
+      {
+        key: 'agi',
+        label: 'Adjusted gross income (summary)',
+        type: 'number',
+        hint: 'Form 1040 AGI line only, if clearly printed; else null. Do not compute.',
+      },
+    ],
+  },
 }
 
 export function getFormSchema(formType: DocumentType): FormSchema | undefined {
